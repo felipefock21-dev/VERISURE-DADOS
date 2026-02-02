@@ -134,8 +134,8 @@ function mostrarModalOAuth({ loading, autenticado, titulo, descricao, btnTexto, 
 
         contentHTML = `
             ${backgroundSVG}
-            <!-- Logo Fora da Caixa e Maior (90px) -->
-            <img src="/static/logo-emidias.png" alt="E-MIDIAS" style="height: 90px; margin-bottom: 40px; position: relative; z-index: 3;">
+            <!-- Logo Fora da Caixa e Maior (140px) -->
+            <img src="/static/logo-emidias-v2.png" alt="E-MIDIAS" style="height: 140px; margin-bottom: 40px; position: relative; z-index: 3;">
             
             <div class="oauth-modal-content">
                 <div class="oauth-body">
