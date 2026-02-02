@@ -1,0 +1,30 @@
+PASSO A PASSO - REPLIT
+
+Se receber "Environment updated. Reloading shell..." faça o seguinte:
+
+1. NO REPLIT - Clique em "Tools" (engrenagem à esquerda)
+2. Selecione "Workspace" → "Configured language"
+3. Escolha "Python"
+4. Clique "Create .replit file"
+5. Cole isto no arquivo que abrir:
+
+---
+run = "python run_app.py"
+modules = ["python-3.10"]
+
+[packager]
+language = "python3"
+ignoredPaths = ["__pycache__", ".git", "*.pyc"]
+
+[packager.features]
+enableGuessImports = true
+---
+
+6. CTRL+S para salvar
+7. Clique no botão "Run" (verde, topo da tela)
+8. Espera 30 segundos
+9. URL vai aparecer no console!
+
+PRONTO! 🎉
+
+Se der erro, me avisa o erro exato que aparece.

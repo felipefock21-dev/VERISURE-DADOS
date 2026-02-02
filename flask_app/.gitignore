@@ -1,0 +1,61 @@
+# Ambiente virtual
+venv/
+env/
+ENV/
+.venv
+
+# Arquivos temporários
+temp_uploads/
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.DS_Store?
+
+# Credenciais (NUNCA commitar!)
+credentials.json
+.env
+config.local.py
+
+# Flask
+instance/
+.webassets-cache
+
+# Logs
+*.log
+logs/
+
+# Banco de dados
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Testes
+.coverage
+.hypothesis/
+
+# Arquivos pessoais
+notas.txt
+TODO.txt
+
+# Arquivos Excel/temp
+*.xlsx
+*.xls
+*.csv
+~$*.xlsx

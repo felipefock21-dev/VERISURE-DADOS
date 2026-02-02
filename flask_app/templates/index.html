@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VERISURE - Compilador de Relatórios</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <!-- Header Full Width -->
+    <header class="header-fullwidth">
+        <div class="header">
+            <div class="header-top">
+                <div class="logo-section">
+                    <div class="logo">VERISURE</div>
+                    <div class="logo-text">
+                        <h1>Compilador</h1>
+                        <p class="tagline">Processamento de Relatórios</p>
+                    </div>
+                </div>
+                <div class="auth-section">
+                    <div id="authStatus" class="auth-status">
+                        <span class="status-dot loading"></span>
+                        <span id="authText">Carregando...</span>
+                    </div>
+                </div>
+            </div>
+            <div class="header-content">
+                <p class="subtitle">Pipeline Automático: Compilado → Mensal → Semanal</p>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+
+        <!-- Main Content -->
+        <main class="main-content">
+            
+            <!-- Seção Upload -->
+            <section class="upload-section">
+                <h2>Upload do Arquivo</h2>
+                
+                <div class="upload-area" id="uploadArea">
+                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <p class="upload-text">
+                        Clique para selecionar ou arraste o arquivo aqui
+                    </p>
+                    <p class="upload-hint">Formatos aceitos: .xlsx, .xls (Máximo 500MB)</p>
+                    <input type="file" id="fileInput" accept=".xlsx,.xls" hidden>
+                </div>
+            </section>
+
+            <!-- Seção de Progresso -->
+            <section class="progress-section" id="progressSection" style="display: none;">
+                <h2>Processando...</h2>
+                
+                <div class="progress-steps">
+                    <!-- Passo 1 -->
+                    <div class="step" id="step1">
+                        <div class="step-header">
+                            <span class="step-number">1</span>
+                            <h3>Compilação</h3>
+                            <span class="step-status"></span>
+                        </div>
+                        <p class="step-description">Limpando e compilando dados...</p>
+                    </div>
+
+                    <!-- Passo 2 -->
+                    <div class="step" id="step2">
+                        <div class="step-header">
+                            <span class="step-number">2</span>
+                            <h3>Relatório Mensal</h3>
+                            <span class="step-status"></span>
+                        </div>
+                        <p class="step-description">Agrupando por período comercial...</p>
+                    </div>
+
+                    <!-- Passo 3 -->
+                    <div class="step" id="step3">
+                        <div class="step-header">
+                            <span class="step-number">3</span>
+                            <h3>Relatório Semanal</h3>
+                            <span class="step-status"></span>
+                        </div>
+                        <p class="step-description">Agrupando por semana...</p>
+                    </div>
+                </div>
+
+                <!-- Barra de Carregamento -->
+                <div class="progress-container" id="progressContainer" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <p class="progress-text" id="progressText">Processando... 0%</p>
+                </div>
+            </section>
+
+            <!-- Seção de Resultado -->
+            <section class="result-section" id="resultSection" style="display: none;">
+                <h2>Processamento Concluído</h2>
+                
+                <div class="result-cards">
+                    <!-- Card Compilado -->
+                    <div class="result-card">
+                        <div class="card-icon">COMPILADO</div>
+                        <h3>Arquivo Compilado</h3>
+                        <p class="card-info" id="compiladoInfo">0 registros</p>
+                        <button class="download-btn" onclick="downloadArquivo('compilado')">
+                            Baixar COMPILADO
+                        </button>
+                    </div>
+
+                    <!-- Card Mensal -->
+                    <div class="result-card">
+                        <div class="card-icon">MENSAL</div>
+                        <h3>Relatório Mensal</h3>
+                        <p class="card-info" id="mensalInfo">0 registros</p>
+                        <button class="download-btn" onclick="downloadArquivo('mensal')" id="downloadMensalBtn" disabled>
+                            Baixar MENSAL
+                        </button>
+                    </div>
+
+                    <!-- Card Semanal -->
+                    <div class="result-card">
+                        <div class="card-icon">SEMANAL</div>
+                        <h3>Relatório Semanal</h3>
+                        <p class="card-info" id="semanalInfo">0 registros</p>
+                        <button class="download-btn" onclick="downloadArquivo('semanal')" id="downloadSemanalBtn" disabled>
+                            Baixar SEMANAL
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Botão Processar Novo -->
+                <div class="button-group">
+                    <button class="btn-novo" onclick="resetarFormulario()">
+                        Processar Novo Arquivo
+                    </button>
+                </div>
+            </section>
+
+            <!-- Seção de Erro -->
+            <section class="error-section" id="errorSection" style="display: none;">
+                <h2>Erro no Processamento</h2>
+                <div class="error-message" id="errorMessage"></div>
+                <button class="btn-novo" onclick="resetarFormulario()">
+                    Tentar Novamente
+                </button>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Modal de Conclusão -->
+    <div id="successModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Processamento Concluído</h2>
+            </div>
+            <div class="modal-body">
+                <div class="success-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                </div>
+                <p>Seus relatórios foram processados e enviados com sucesso!</p>
+                <p class="success-subtext">Os arquivos estão prontos para download</p>
+                <!-- Mensagem da atualização da tabela semanal oficial -->
+                <div id="mensagemTabela"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn" onclick="fecharModal()">OK, Entendi</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

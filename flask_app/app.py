@@ -1,0 +1,2191 @@
+# -*- coding: utf-8 -*-
+"""
+COMPILADOR DE RELATÓRIOS VERISURE - Versão Web (Flask)
+Reutiliza FIELMENTE a lógica do script Colab em uma aplicação web
+"""
+
+from flask import Flask, render_template, request, jsonify, send_file, redirect, session, url_for, Response
+import pandas as pd
+import os
+import glob
+from datetime import datetime
+import warnings
+import re
+from werkzeug.utils import secure_filename
+import io
+import time
+import gspread
+import json
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from openpyxl import load_workbook
+from copy import copy
+from openpyxl.utils import get_column_letter
+import requests
+import tempfile
+import sys
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+
+# Adicionar pasta raiz ao path para importar oauth_manager
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from oauth_manager import (
+    authorize_url, exchange_code_for_token, 
+    get_authenticated_drive_service, get_authenticated_sheets_service,
+    load_credentials, save_credentials
+)
+from oauth_config import DRIVE_FOLDER_ID, TOKEN_FILE
+
+warnings.filterwarnings('ignore')
+
+# ===== ARMAZENAMENTO DE PROGRESSO (para SSE) =====
+upload_progress = {
+    'etapa': 0,  # 0=nenhuma, 1=passo1, 2=passo2, 3=passo3, 4=completo
+    'percentual': 0,
+    'mensagem': 'Aguardando arquivo...'
+}
+
+def atualizar_progresso(etapa, percentual, mensagem):
+    """Atualiza o progresso global"""
+    global upload_progress
+    upload_progress = {
+        'etapa': etapa,
+        'percentual': min(percentual, 100),
+        'mensagem': mensagem
+    }
+    print(f"[PROGRESSO] {percentual}% - {mensagem}")
+
+# Verificar se OAuth está configurado
+OAUTH_CONFIGURED = os.path.exists(TOKEN_FILE)
+print(f"[OAUTH] Status inicial: {'✅ Token carregado' if OAUTH_CONFIGURED else '⚠️ Não autenticado - acesse /authorize'}")
+
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max
+app.config['UPLOAD_FOLDER'] = 'temp_uploads'
+app.config['SAIDAS_FOLDER'] = 'saidas'
+app.secret_key = 'sua_chave_secreta_aqui_mude_em_producao'  # Para sessions
+
+# Adicionar headers CORS para permitir requisições de qualquer origem
+@app.after_request
+def add_cors_headers(response):
+    """Adiciona headers CORS para permitir requisições do navegador"""
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
+# ==============================================================================
+# ENDPOINTS OAUTH 2.0
+# ==============================================================================
+
+@app.route('/authorize')
+def authorize():
+    """Redireciona para a página de login do Google"""
+    auth_url, state = authorize_url()
+    session['oauth_state'] = state
+    print(f"[OAUTH] 🔐 Redirecionando para Google OAuth...")
+    return redirect(auth_url)
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    """Callback após autorização do Google"""
+    code = request.args.get('code')
+    state = request.args.get('state')
+    
+    if not code:
+        return jsonify({'erro': 'Autorização negada'}), 401
+    
+    try:
+        creds = exchange_code_for_token(code)
+        print(f"[OAUTH] ✅ Autenticação bem-sucedida!")
+        return jsonify({
+            'sucesso': True,
+            'mensagem': 'Autenticado com sucesso! Você pode fazer upload de arquivos agora.'
+        }), 200
+    except Exception as e:
+        print(f"[OAUTH] ❌ Erro na autenticação: {str(e)}")
+        return jsonify({'erro': f'Erro na autenticação: {str(e)}'}), 401
+
+@app.route('/progresso')
+def progresso_sse():
+    """Server-Sent Events para enviar progresso em tempo real"""
+    def gerar_progresso():
+        while True:
+            yield f"data: {json.dumps(upload_progress)}\n\n"
+            time.sleep(0.5)  # Atualiza a cada 500ms
+    
+    return Response(gerar_progresso(), mimetype='text/event-stream')
+
+@app.route('/oauth-status')
+def oauth_status():
+    """Retorna o status da autenticação OAuth"""
+    creds = load_credentials()
+    if creds:
+        return jsonify({
+            'autenticado': True,
+            'mensagem': '✅ Autenticado! Pronto para fazer upload.'
+        }), 200
+    else:
+        return jsonify({
+            'autenticado': False,
+            'mensagem': '⚠️ Não autenticado. Acesse /authorize para fazer login.',
+            'link_authorize': '/authorize'
+        }), 401
+
+
+# Criar pastas
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['SAIDAS_FOLDER'], exist_ok=True)
+
+# Períodos comerciais
+PERIODOS_COMERCIAIS = {
+    # 2025
+    "Jan'25": ("2024-12-25", "2025-01-28"),
+    "Fev'25": ("2025-01-29", "2025-02-25"),
+    "Mar'25": ("2025-02-26", "2025-03-31"),
+    "Abr'25": ("2025-04-01", "2025-04-28"),
+    "Mai'25": ("2025-04-29", "2025-05-26"),
+    "Jun'25": ("2025-05-27", "2025-06-30"),
+    "Jul'25": ("2025-07-01", "2025-07-28"),
+    "Ago'25": ("2025-07-29", "2025-08-25"),
+    "Set'25": ("2025-08-26", "2025-09-29"),
+    "Out'25": ("2025-09-30", "2025-10-27"),
+    "Nov'25": ("2025-10-28", "2025-11-24"),
+    "Dez'25": ("2025-11-25", "2025-12-29"),
+    # 2026
+    "Jan'26": ("2025-12-30", "2026-01-26"),
+    "Fev'26": ("2026-01-27", "2026-02-23"),
+    "Mar'26": ("2026-02-24", "2026-03-30"),
+    "Abr'26": ("2026-03-31", "2026-04-27"),
+    "Mai'26": ("2026-04-28", "2026-05-25"),
+    "Jun'26": ("2026-05-26", "2026-06-29"),
+    "Jul'26": ("2026-06-30", "2026-07-27"),
+    "Ago'26": ("2026-07-28", "2026-08-31"),
+    "Set'26": ("2026-09-01", "2026-09-28"),
+    "Out'26": ("2026-09-29", "2026-10-26"),
+    "Nov'26": ("2026-10-27", "2026-11-30"),
+    "Dez'26": ("2026-12-01", "2026-12-28"),
+}
+
+# Mapa de praças
+MAPA_PRACAS = {
+    "São Paulo Capital": ["São Paulo / SP"],
+    "Rio de Janeiro Capital": ["Rio de Janeiro / RJ"],
+    "Belo Horizonte Capital": ["Belo Horizonte / MG"],
+    "Campinas Capital": ["Campinas / SP"],
+    "São Paulo Litoral": ["Santos / SP"],
+    "Ribeirão Preto": ["Ribeirão Preto / SP"],
+    "Sorocaba": ["Sorocaba / SP"],
+    "SJCampos": ["São José dos Campos / SP"],
+    "Vitoria Capital": ["Vitória / ES"],
+    "Petropolis e Volta Redonda RJ": ["Petrópolis / RJ", "Volta Redonda / RJ"],
+    "Curitiba Capital": ["Curitiba / PR"],
+    "Porto Alegre Capital": ["Porto Alegre / RS"],
+    "Florianopolis Capital": ["Florianópolis / SC"],
+    "Joinville": ["Joinville / SC"],
+    "Brasilia Capital": ["Brasília / DF"],
+    "Goiania Capital": ["Goiânia / GO"],
+    "Uberlandia": ["Uberlândia / MG"],
+    "Campo Grande Capital": ["Campo Grande / MS"],
+    "Recife Capital": ["Recife / PE"],
+    "Salvador Capital": ["Salvador / BA"],
+    "Fortaleza Capital": ["Fortaleza / CE"],
+    "Joao Pessoa Capital": ["João Pessoa / PB"],
+    "Bauru": ["Bauru / SP"],
+}
+
+# ==============================================================================
+# UTILITÁRIOS PARA GERENCIAR ARQUIVOS NA PASTA SAIDAS
+# ==============================================================================
+
+import glob as glob_module
+
+def list_google_sheets_in_drive(drive_service, folder_name="RelatorioVeri"):
+    """Lista todos os Google Sheets em uma pasta específica do Drive"""
+    try:
+        # Busca a pasta no Drive
+        folder_query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'"
+        folder_results = drive_service.files().list(q=folder_query, fields="files(id, name)").execute()
+        folders = folder_results.get('files', [])
+
+        if not folders:
+            print(f"[DRIVE] ⚠️ Pasta '{folder_name}' não encontrada no Google Drive")
+            return []
+
+        folder_id = folders[0]['id']
+        print(f"[DRIVE] 📁 Pasta encontrada: {folder_name} (ID: {folder_id})")
+
+        # Lista todos os Google Sheets na pasta
+        sheets_query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.spreadsheet'"
+        sheets_results = drive_service.files().list(
+            q=sheets_query,
+            fields="files(id, name, modifiedTime)",
+            pageSize=100
+        ).execute()
+        sheets = sheets_results.get('files', [])
+
+        print(f"[DRIVE] 📋 Encontrados {len(sheets)} Google Sheets na pasta")
+
+        # Debug: lista todos os arquivos encontrados
+        print("[DRIVE] 🔍 Arquivos encontrados:")
+        for sheet in sheets:
+            print(f"[DRIVE]    📄 {sheet['name']}")
+
+        return sheets
+
+    except Exception as e:
+        print(f"[DRIVE] ⚠️ Erro ao listar sheets da pasta: {str(e)}")
+        return []
+
+def read_google_sheet(sheets_service, sheet_id, sheet_name):
+    """Lê dados de um Google Sheet pelo ID usando Google Sheets API (OAuth)"""
+    try:
+        print(f"[DRIVE]   📖 Abrindo Google Sheet: {sheet_name}")
+        
+        # Obtém metadados da planilha (lista de abas)
+        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+        sheets = spreadsheet.get('sheets', [])
+        
+        if not sheets:
+            print(f"[DRIVE]   ❌ Nenhuma aba encontrada em {sheet_name}")
+            return None
+        
+        # Tenta ler cada aba até encontrar dados válidos
+        for i, sheet_meta in enumerate(sheets):
+            sheet_title = sheet_meta.get('properties', {}).get('title')
+            try:
+                print(f"[DRIVE]     📄 Tentando aba {i+1}: {sheet_title}")
+                
+                # Lê os dados da aba
+                range_name = f"'{sheet_title}'!A:Z"
+                result = sheets_service.spreadsheets().values().get(
+                    spreadsheetId=sheet_id,
+                    range=range_name
+                ).execute()
+                
+                values = result.get('values', [])
+                
+                if values and len(values) > 1:  # Pelo menos cabeçalho + 1 linha
+                    df = pd.DataFrame(values[1:], columns=values[0])
+                    print(f"[DRIVE]     ✅ Sucesso! {len(df)} linhas lidas da aba '{sheet_title}'")
+                    return df
+                    
+            except Exception as e:
+                print(f"[DRIVE]     ⚠️ Erro na aba {sheet_title}: {str(e)}")
+                continue
+        
+        print(f"[DRIVE]   ❌ Nenhuma aba válida encontrada em {sheet_name}")
+        return None
+        
+    except Exception as e:
+        print(f"[DRIVE]   ❌ Erro ao ler {sheet_name}: {str(e)}")
+        return None
+
+def get_saidas_folder_id():
+    """Encontra ou cria a pasta 'saidas' no Google Drive"""
+    try:
+        drive_service, _ = init_google_drive()
+        if not drive_service:
+            return None
+        
+        # Busca pasta RelatorioVeri
+        folder_query = "name='RelatorioVeri' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        folder_results = drive_service.files().list(q=folder_query, fields="files(id, name)").execute()
+        folders = folder_results.get('files', [])
+        
+        if not folders:
+            print("[GOOGLE DRIVE] ⚠️ Pasta 'RelatorioVeri' não encontrada")
+            return None
+        
+        relatorio_veri_id = folders[0]['id']
+        
+        # Busca pasta 'saidas' dentro de RelatorioVeri
+        saidas_query = f"name='saidas' and '{relatorio_veri_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        saidas_results = drive_service.files().list(q=saidas_query, fields="files(id, name)").execute()
+        saidas_folders = saidas_results.get('files', [])
+        
+        if saidas_folders:
+            return saidas_folders[0]['id']
+        
+        # Se não existir, cria a pasta
+        print("[GOOGLE DRIVE] 📁 Criando pasta 'saidas'...")
+        file_metadata = {
+            'name': 'saidas',
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [relatorio_veri_id]
+        }
+        folder = drive_service.files().create(body=file_metadata, fields='id').execute()
+        saidas_id = folder.get('id')
+        print(f"[GOOGLE DRIVE] ✅ Pasta 'saidas' criada: {saidas_id}")
+        return saidas_id
+    
+    except Exception as e:
+        print(f"[GOOGLE DRIVE] ❌ Erro ao buscar pasta saidas: {str(e)}")
+        return None
+
+def upload_to_drive(local_filepath, filename):
+    """Faz upload do arquivo para Google Drive usando OAuth"""
+    try:
+        drive_service = get_authenticated_drive_service()
+        if not drive_service:
+            print("[OAUTH] ⚠️ Não autenticado - Acesse /authorize primeiro")
+            return None
+        
+        # Usa o folder_id da configuração OAuth
+        folder_id = DRIVE_FOLDER_ID
+        
+        # Verifica se já existe arquivo com mesmo nome e deleta
+        query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get('files', [])
+        
+        if files:
+            for file in files:
+                drive_service.files().delete(fileId=file['id']).execute()
+                print(f"[GOOGLE DRIVE] 🗑️ Arquivo antigo deletado: {filename}")
+        
+        # Faz upload do novo arquivo
+        file_metadata = {
+            'name': filename,
+            'parents': [folder_id]
+        }
+        
+        media = MediaFileUpload(local_filepath, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        
+        file_id = file.get('id')
+        link = file.get('webViewLink')
+        print(f"[GOOGLE DRIVE] ✅ Upload realizado: {filename}")
+        print(f"[GOOGLE DRIVE] 🔗 Link: {link}")
+        return file_id
+    
+    except Exception as e:
+        print(f"[GOOGLE DRIVE] ❌ Erro no upload: {str(e)}")
+        return None
+        return None
+
+
+def upload_all_reports_to_drive(timestamp):
+    """Faz upload automático dos 3 arquivos gerados para Google Drive (pasta compartilhada)"""
+    print("\n" + "="*80)
+    print("[UPLOAD] 🚀 Iniciando upload automático para Google Drive...")
+    print("="*80)
+    
+    try:
+        saidas_path = app.config['SAIDAS_FOLDER']
+        
+        # Encontra os arquivos MAIS RECENTES de cada tipo
+        import glob
+        
+        # Procura o COMPILADO com esse timestamp
+        compilado_files = sorted(
+            glob.glob(os.path.join(saidas_path, f'COMPILADO_{timestamp}.xlsx')),
+            key=lambda x: os.path.getmtime(x),
+            reverse=True
+        )
+        
+        # Procura o MENSAL mais recente
+        mensal_files = sorted(
+            glob.glob(os.path.join(saidas_path, 'RELATORIO_MENSAL_*.xlsx')),
+            key=lambda x: os.path.getmtime(x),
+            reverse=True
+        )
+        
+        # Procura o SEMANAL mais recente
+        semanal_files = sorted(
+            glob.glob(os.path.join(saidas_path, 'RELATORIO_SEMANAL_*.xlsx')),
+            key=lambda x: os.path.getmtime(x),
+            reverse=True
+        )
+        
+        files_to_upload = []
+        
+        if compilado_files:
+            files_to_upload.append((compilado_files[0], os.path.basename(compilado_files[0]), 'COMPILADO'))
+        if mensal_files:
+            files_to_upload.append((mensal_files[0], os.path.basename(mensal_files[0]), 'MENSAL'))
+        if semanal_files:
+            files_to_upload.append((semanal_files[0], os.path.basename(semanal_files[0]), 'SEMANAL'))
+        
+        results = {}
+        for filepath, filename, tipo in files_to_upload:
+            
+            if os.path.exists(filepath):
+                print(f"\n[UPLOAD] 📤 Uploading {tipo}...")
+                print(f"[UPLOAD] Arquivo: {filename}")
+                file_id = upload_to_drive(filepath, filename)
+                results[tipo] = {'sucesso': file_id is not None, 'file_id': file_id}
+                print(f"[UPLOAD] {tipo}: {'✅' if file_id else '❌'}")
+            else:
+                print(f"\n[UPLOAD] ⚠️ Arquivo não encontrado: {filepath}")
+                results[tipo] = {'sucesso': False, 'file_id': None}
+        
+        print("\n" + "="*80)
+        print("[UPLOAD] ✅ Upload automático concluído!")
+        print("="*80 + "\n")
+        return results
+    
+    except Exception as e:
+        print(f"[UPLOAD] ❌ Erro ao fazer upload dos arquivos: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def get_latest_compiled_file():
+    """Encontra o arquivo compilado mais recente na pasta saidas"""
+    saidas_path = app.config['SAIDAS_FOLDER']
+    pattern = os.path.join(saidas_path, 'COMPILADO_*.xlsx')
+    files = glob_module.glob(pattern)
+    
+    if not files:
+        return None
+    
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files[0]
+
+def get_latest_semanal_file():
+    """Encontra o arquivo semanal mais recente na pasta saidas"""
+    saidas_path = app.config['SAIDAS_FOLDER']
+    pattern = os.path.join(saidas_path, 'RELATORIO_SEMANAL_*.xlsx')
+    files = glob_module.glob(pattern)
+    
+    if not files:
+        return None
+    
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files[0]
+
+def apply_manual_formatting(output_path, df_output):
+    """Aplica formatação profissional igual ao Colab - sem copiar template"""
+    try:
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+        
+        wb_output = load_workbook(output_path)
+        ws_output = wb_output.active
+        
+        num_cols = len(df_output.columns)
+        num_rows = ws_output.max_row
+        
+        print(f"[FORMATACAO] 🎨 Aplicando formatação manual: {num_cols} colunas x {num_rows} linhas")
+        
+        # ===== 1️⃣ DEFINIR ESTILOS =====
+        print(f"[FORMATACAO]    1. Definindo estilos...")
+        
+        # Fonte do cabeçalho: Bold, Branco, Tamanho 11
+        header_font = Font(bold=True, color="FFFFFF", size=11, name="Arial")
+        
+        # Fonte dos dados: Tamanho 10
+        data_font = Font(size=10, name="Arial")
+        
+        # Cor do cabeçalho: Azul escuro (#366092)
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        
+        # Bordas finas em todas as células
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Alinhamento: centro
+        center_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        
+        print(f"[FORMATACAO]       ✅ Estilos criados (Azul #366092, Arial Bold 11)")
+        
+        # ===== 2️⃣ FORMATAR CABEÇALHO =====
+        print(f"[FORMATACAO]    2. Formatando cabeçalho...")
+        
+        for col_idx in range(1, num_cols + 1):
+            cell = ws_output.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_alignment
+            cell.border = thin_border
+        
+        ws_output.row_dimensions[1].height = 20  # Altura do cabeçalho
+        
+        print(f"[FORMATACAO]       ✅ Cabeçalho formatado (fundo azul, texto branco)")
+        
+        # ===== 3️⃣ FORMATAR DADOS =====
+        print(f"[FORMATACAO]    3. Formatando dados...")
+        
+        for row_idx in range(2, num_rows + 1):
+            ws_output.row_dimensions[row_idx].height = 16  # Altura das linhas
+            
+            for col_idx in range(1, num_cols + 1):
+                cell = ws_output.cell(row=row_idx, column=col_idx)
+                cell.font = data_font
+                cell.alignment = center_alignment
+                cell.border = thin_border
+        
+        print(f"[FORMATACAO]       ✅ Dados formatados (bordas, alinhamento centro)")
+        
+        # ===== 4️⃣ FORMATAR NÚMEROS =====
+        print(f"[FORMATACAO]    4. Formatando números...")
+        
+        column_names = list(df_output.columns)
+        
+        for row_idx in range(2, num_rows + 1):
+            for col_idx, col_name in enumerate(column_names, 1):
+                cell = ws_output.cell(row=row_idx, column=col_idx)
+                
+                # Colunas de moeda
+                if col_name in ['Investimento', 'Preço']:
+                    cell.number_format = 'R$ #,##0.00'
+                # Colunas de número inteiro com separador
+                elif col_name in ['Impacto', 'TRPs', 'Universo', 'PMM', 'Inserções', 'Impactos', 'TRP']:
+                    cell.number_format = '#,##0'
+        
+        print(f"[FORMATACAO]       ✅ Números formatados (Investimento=R$, outros=#,##0)")
+        
+        # ===== 5️⃣ AJUSTAR LARGURA DAS COLUNAS =====
+        print(f"[FORMATACAO]    5. Ajustando largura das colunas...")
+        
+        # Larguras padrão para MENSAL (7 colunas: Praça, Mês, Impacto, TRPs, Investimento, Universo, PMM)
+        column_widths_mensal = {
+            'A': 25,  # Praça
+            'B': 15,  # Mês
+            'C': 15,  # Impacto
+            'D': 15,  # TRPs
+            'E': 18,  # Investimento
+            'F': 15,  # Universo
+            'G': 15,  # PMM
+        }
+        
+        # Larguras padrão para SEMANAL (11 colunas: Rádio, Semana, Ano Comercial, Mês Comercial, Inserções, Investimento, Impactos, TRP, PMM, Universo, Programado)
+        column_widths_semanal = {
+            'A': 20,  # Rádio
+            'B': 35,  # Semana
+            'C': 15,  # Ano Comercial
+            'D': 15,  # Mês Comercial
+            'E': 12,  # Inserções
+            'F': 18,  # Investimento
+            'G': 12,  # Impactos
+            'H': 12,  # TRP
+            'I': 12,  # PMM
+            'J': 15,  # Universo
+            'K': 15,  # Programado
+        }
+        
+        # Escolhe qual conjunto de larguras usar
+        column_widths = column_widths_mensal if num_cols == 7 else column_widths_semanal
+        
+        for col_idx, col_name in enumerate(column_names, 1):
+            col_letter = ws_output.cell(row=1, column=col_idx).column_letter
+            
+            if col_letter in column_widths:
+                ws_output.column_dimensions[col_letter].width = column_widths[col_letter]
+                print(f"[FORMATACAO]       {col_letter}: {column_widths[col_letter]}")
+            else:
+                ws_output.column_dimensions[col_letter].width = 15
+        
+        print(f"[FORMATACAO]       ✅ Colunas ajustadas")
+        
+        # ===== 6️⃣ CONGELAR LINHA DE CABEÇALHO =====
+        print(f"[FORMATACAO]    6. Congelando cabeçalho...")
+        ws_output.freeze_panes = 'A2'
+        print(f"[FORMATACAO]       ✅ Cabeçalho congelado")
+        
+        # Salvar workbook com flush
+        try:
+            wb_output.save(output_path)
+            print(f"[FORMATACAO] 💾 Arquivo salvo em: {output_path}")
+        except Exception as save_error:
+            print(f"[FORMATACAO] ❌ Erro ao salvar: {str(save_error)}")
+            raise
+        
+        print(f"[FORMATACAO] ✅ Formatação COMPLETA VeriModelo aplicada!")
+        print(f"[FORMATACAO]    - ✅ Larguras de colunas")
+        print(f"[FORMATACAO]    - ✅ Alturas de linhas")
+        print(f"[FORMATACAO]    - ✅ Fontes (Aptos Narrow, Bold, 11pt)")
+        print(f"[FORMATACAO]    - ✅ Alinhamento e wrap")
+        print(f"[FORMATACAO]    - ✅ Tabela RÁDIO-style (AZUL)")
+        
+    except Exception as e:
+        import traceback
+        print(f"[FORMATACAO] ⚠️ Erro ao copiar formatação: {str(e)}")
+        traceback.print_exc()
+
+
+def save_to_saidas(df, filename, apply_formatting=False):
+
+    """Salva DataFrame em arquivo Excel na pasta saidas. Aplica formatação SOMENTE se apply_formatting=True"""
+    try:
+        saidas_path = app.config['SAIDAS_FOLDER']
+        filepath = os.path.join(saidas_path, filename)
+        
+        # Garante que colunas numéricas sejam salvs como números
+        df_export = df.copy()
+        
+        # Remove colunas Unnamed (vazias)
+        df_export = df_export.loc[:, ~df_export.columns.str.contains('^Unnamed')]
+        
+        # Converte Preço para numérico se ainda estiver em string
+        if 'Preço' in df_export.columns:
+            df_export['Preço'] = df_export['Preço'].apply(clean_price_value)
+            df_export['Preço'] = pd.to_numeric(df_export['Preço'], errors='coerce')
+            df_export['Preço'] = df_export['Preço'].fillna(0)
+        
+        print(f"[SAIDAS] 📝 Salvando arquivo: {filename}")
+        print(f"[SAIDAS]    apply_formatting={apply_formatting}")
+        
+        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+            df_export.to_excel(writer, index=False, sheet_name='Dados')
+        
+        print(f"[SAIDAS] ✅ Arquivo salvo localmente: {filename}")
+        
+        # 🎨 Aplicar formatação SOMENTE para MENSAL e SEMANAL
+        if apply_formatting:
+            print(f"[SAIDAS] 🎨 Chamando apply_manual_formatting...")
+            apply_manual_formatting(filepath, df_export)
+            print(f"[SAIDAS] ✅ Formatação aplicada com sucesso!")
+        else:
+            print(f"[SAIDAS] ℹ️ Formatação não aplicada (apply_formatting=False)")
+        
+        # Google Drive desabilitado temporariamente (Service Accounts não têm quota em Drive pessoal)
+        # Para fazer upload, seria necessário usar Shared Drive (Drive organizacional)
+        # upload_to_drive(filepath, filename)
+        
+        return filepath
+    except Exception as e:
+        print(f"[SAIDAS] ❌ Erro ao salvar: {str(e)}")
+        return None
+
+# ==============================================================================
+# FUNÇÕES DE LIMPEZA E PROCESSAMENTO
+# ==============================================================================
+
+def clean_price_value(price_str):
+    """Limpa um valor de preço individual"""
+    if pd.isna(price_str) or price_str == '':
+        return None
+
+    price_str = str(price_str).strip()
+    price_str = re.sub(r'^R\$\s*', '', price_str)
+    price_str = price_str.replace(' ', '')
+
+    if ',' in price_str and '.' in price_str:
+        price_str = price_str.replace('.', '').replace(',', '.')
+    elif ',' in price_str and '.' not in price_str:
+        price_str = price_str.replace(',', '.')
+
+    try:
+        return float(price_str)
+    except:
+        return None
+
+def clean_dataframe(df):
+    """Limpa o DataFrame removendo linhas vazias"""
+    if df is None or df.empty:
+        return df
+
+    df = df.dropna(how='all')
+    df = df[df.apply(lambda x: x.astype(str).str.strip().ne('').any(), axis=1)]
+
+    if 'Rádio' in df.columns:
+        mask = ~df['Rádio'].str.contains('TOTAL|RESUMO', case=False, na=False)
+        df = df[mask]
+
+    return df
+
+def select_required_columns(df):
+    """Seleciona apenas as colunas necessárias"""
+    required_columns = ['Identificador', 'Data', 'Hora', 'Rádio', 'Cidade / UF',
+                       'Peça', 'Comercial', 'Status', 'PMM', 'Preço', 'Semana', 'Ano Comercial', 'Mês Comercial']
+
+    existing_columns = [col for col in required_columns if col in df.columns]
+
+    if not existing_columns:
+        return pd.DataFrame()
+
+    return df[existing_columns].copy()
+
+def extract_dados_identificador_from_google_sheets():
+    """Extrai DadosIdentificador do Google Sheets usando OAuth"""
+    try:
+        # ID da planilha DadosIdentificador
+        sheet_id = "1UmWzuIpF1nEh1YUJH4pu9jJL7PJHvlQvHE4Pnrw6xhA"
+        
+        print("[PASSO 1] 📖 Carregando DadosIdentificador do Google Sheets...")
+        
+        sheets_service = get_authenticated_sheets_service()
+        
+        if not sheets_service:
+            print("[PASSO 1] ⚠️ Não autenticado no Google Sheets")
+            return None
+        
+        try:
+            # Obtém metadados da planilha
+            spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+            sheets_list = spreadsheet.get('sheets', [])
+            
+            if not sheets_list:
+                print("[PASSO 1] ℹ️ Google Sheets vazio")
+                return None
+            
+            # Lê a primeira aba
+            sheet_title = sheets_list[0].get('properties', {}).get('title')
+            range_name = f"'{sheet_title}'!A:Z"
+            result = sheets_service.spreadsheets().values().get(
+                spreadsheetId=sheet_id,
+                range=range_name
+            ).execute()
+            
+            values = result.get('values', [])
+            
+            if not values or len(values) < 2:
+                print("[PASSO 1] ℹ️ Google Sheets vazio")
+                return None
+            
+            # Cria DataFrame
+            df_dados_id = pd.DataFrame(values[1:], columns=values[0])
+            
+            # Seleciona colunas necessárias
+            merge_columns = ['Identificador', 'Universo', 'porc']
+            existing_cols = [col for col in merge_columns if col in df_dados_id.columns]
+            
+            if 'Identificador' not in existing_cols:
+                print("[PASSO 1] ℹ️ Coluna 'Identificador' não encontrada em Google Sheets")
+                return None
+            
+            print(f"[PASSO 1] ✅ DadosIdentificador carregado: {len(df_dados_id)} registros")
+            return df_dados_id[existing_cols].copy()
+            
+        except Exception as e:
+            print(f"[PASSO 1] ℹ️ Erro ao ler Google Sheets: {str(e)}")
+            return None
+    
+    except Exception as e:
+        print(f"[PASSO 1] ℹ️ Erro ao carregar DadosIdentificador: {str(e)}")
+        return None
+
+def extract_dados_identificador(arquivo_path):
+    """Extrai DadosIdentificador do arquivo Excel ou Google Sheets"""
+    try:
+        xls = pd.ExcelFile(arquivo_path)
+        
+        # Procura pela aba DadosIdentificador (várias variações possíveis)
+        dados_id_sheet = None
+        for sheet_name in xls.sheet_names:
+            if 'dadosidentificador' in sheet_name.lower().replace(' ', '').replace('_', ''):
+                dados_id_sheet = sheet_name
+                break
+        
+        if not dados_id_sheet:
+            xls.close()
+            print("[PASSO 1] ℹ️ DadosIdentificador não encontrado - Universo=0, PMM no Target=0")
+            return None
+        
+        # Lê a aba DadosIdentificador
+        df_dados_id = pd.read_excel(arquivo_path, sheet_name=dados_id_sheet)
+        xls.close()
+        
+        # Remove segunda linha se necessário
+        if len(df_dados_id) > 1:
+            df_dados_id = df_dados_id.drop(index=0).reset_index(drop=True)
+        
+        # Seleciona colunas necessárias para merge
+        merge_columns = ['Identificador', 'Universo', 'porc']
+        existing_cols = [col for col in merge_columns if col in df_dados_id.columns]
+        
+        if 'Identificador' not in existing_cols:
+            print("[PASSO 1] ⚠️ Coluna 'Identificador' não encontrada em DadosIdentificador")
+            return None
+        
+        print(f"[PASSO 1] ✅ DadosIdentificador encontrado: {len(df_dados_id)} registros")
+        return df_dados_id[existing_cols].copy()
+    
+    except Exception as e:
+        print(f"[PASSO 1] ⚠️ Erro ao ler DadosIdentificador: {str(e)}")
+        return None
+
+def process_data_types(df):
+    """Formata os tipos de dados"""
+    if df.empty:
+        return df
+
+    # Formata Data
+    if 'Data' in df.columns:
+        try:
+            df['Data'] = pd.to_datetime(df['Data'], errors='coerce', dayfirst=True)
+            df['Data'] = df['Data'].dt.strftime('%d/%m/%Y')
+        except:
+            pass
+
+    # Formata Hora
+    if 'Hora' in df.columns:
+        try:
+            df['Hora'] = df['Hora'].astype(str).str.strip()
+            df['Hora'] = df['Hora'].str.replace(r'\.\d+$', '', regex=True)
+
+            def normalize_hora(hora_str):
+                if pd.isna(hora_str) or str(hora_str).strip() == '':
+                    return ''
+                hora_str = str(hora_str).strip()
+                if len(hora_str.split(':')) == 3:
+                    return hora_str
+                elif len(hora_str.split(':')) == 2:
+                    return hora_str + ':00'
+                else:
+                    return hora_str
+
+            df['Hora'] = df['Hora'].apply(normalize_hora)
+        except:
+            pass
+
+    # Converte PMM
+    if 'PMM' in df.columns:
+        try:
+            df['PMM'] = df['PMM'].astype(str).str.replace(',', '.')
+            df['PMM'] = pd.to_numeric(df['PMM'], errors='coerce')
+        except:
+            pass
+
+    # Converte Preço
+    if 'Preço' in df.columns:
+        try:
+            df['Preço'] = df['Preço'].apply(clean_price_value)
+        except:
+            pass
+
+    return df
+
+def remove_duplicates_properly(df):
+    """Remove duplicatas baseado em Identificador, Data, Hora, Semana, Ano Comercial e Mês Comercial"""
+    if df.empty:
+        return df, 0
+
+    original_count = len(df)
+
+    required_cols = ['Identificador', 'Data', 'Hora']
+    if not all(col in df.columns for col in required_cols):
+        return df, 0
+
+    df_clean = df.copy()
+
+    df_clean['Identificador_clean'] = df_clean['Identificador'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
+    df_clean['Data_clean'] = df_clean['Data'].astype(str).str.strip().str.replace(' ', '').str.upper().replace('', 'VAZIO')
+    df_clean['Hora_clean'] = df_clean['Hora'].astype(str).str.strip().str.replace(' ', '')
+    df_clean['Hora_clean'] = df_clean['Hora_clean'].str.replace(r'\.\d+$', '', regex=True)
+    df_clean['Hora_clean'] = df_clean['Hora_clean'].apply(lambda x:
+        x if len(str(x).split(':')) == 3 else (str(x) + ':00' if len(str(x).split(':')) == 2 else 'VAZIO'))
+    df_clean['Hora_clean'] = df_clean['Hora_clean'].str.upper().replace('', 'VAZIO')
+
+    # Adiciona limpeza para Semana, Ano Comercial e Mês Comercial se existirem
+    duplicate_cols = ['Identificador_clean', 'Data_clean', 'Hora_clean']
+    
+    if 'Semana' in df_clean.columns:
+        df_clean['Semana_clean'] = df_clean['Semana'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
+        duplicate_cols.append('Semana_clean')
+    
+    if 'Ano Comercial' in df_clean.columns:
+        df_clean['AnoComercial_clean'] = df_clean['Ano Comercial'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
+        duplicate_cols.append('AnoComercial_clean')
+    
+    if 'Mês Comercial' in df_clean.columns:
+        df_clean['MesComercial_clean'] = df_clean['Mês Comercial'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
+        duplicate_cols.append('MesComercial_clean')
+
+    df_no_duplicates = df_clean.drop_duplicates(subset=duplicate_cols, keep='first')
+
+    cols_to_drop = [col for col in df_no_duplicates.columns if col.endswith('_clean')]
+    df_no_duplicates = df_no_duplicates.drop(columns=cols_to_drop)
+
+    duplicates_removed = original_count - len(df_no_duplicates)
+
+    return df_no_duplicates, duplicates_removed
+
+# ==============================================================================
+# PASSO 1: COMPILADOR
+# ==============================================================================
+
+def passo1_compilar(arquivo_path):
+    """Passo 1: Compila o arquivo raw + MÚLTIPLAS PLANILHAS DO DRIVE (como o Colab)"""
+    print(f"\n[PASSO 1] 🚀 Iniciando compilação...")
+    print(f"[PASSO 1] 📄 Arquivo principal: {arquivo_path}")
+    
+    try:
+        all_dataframes = []
+        
+        # ========== ETAPA 1: Ler arquivo uploaded ==========
+        print(f"[PASSO 1] 📖 ETAPA 1: Lendo arquivo principal")
+        df_upload = pd.read_excel(arquivo_path, sheet_name=0)
+        print(f"[PASSO 1]    {len(df_upload)} registros lidos do arquivo")
+        
+        # Remove segunda linha se necessário
+        if len(df_upload) > 1:
+            df_upload = df_upload.drop(index=0).reset_index(drop=True)
+        
+        # Limpa e processa
+        df_upload = clean_dataframe(df_upload)
+        df_upload = select_required_columns(df_upload)
+        
+        if not df_upload.empty:
+            df_upload = process_data_types(df_upload)
+            
+            # Converte Preço
+            if 'Preço' in df_upload.columns:
+                df_upload['Preço'] = df_upload['Preço'].apply(clean_price_value)
+                df_upload['Preço'] = pd.to_numeric(df_upload['Preço'], errors='coerce')
+                df_upload['Preço'] = df_upload['Preço'].fillna(0)
+            
+            # Remove duplicatas
+            df_upload, dup_removed = remove_duplicates_properly(df_upload)
+            all_dataframes.append(df_upload)
+            print(f"[PASSO 1]    ✅ {len(df_upload)} registros válidos adicionados (após limpeza)")
+        
+        # ========== ETAPA 2: Ler OUTRAS PLANILHAS do Google Drive ==========
+        print(f"\n[PASSO 1] 📖 ETAPA 2: Buscando outras planilhas no Google Drive...")
+        
+        drive_service = get_authenticated_drive_service()
+        sheets_service = get_authenticated_sheets_service()
+        
+        if not drive_service:
+            print("[PASSO 1] ⚠️ Não autenticado no Google Drive - apenas arquivo local será processado")
+            print("[PASSO 1] ℹ️ Acesse /authorize para fazer login")
+        else:
+            # Lista todos os Google Sheets da pasta RelatorioVeri
+            sheets_list = list_google_sheets_in_drive(drive_service, "RelatorioVeri")
+            
+            dados_identificador_info = None
+            report_sheets = []
+            
+            # Filtra sheets (pula DadosIdentificador e templates)
+            for sheet_info in sheets_list:
+                sheet_name = sheet_info['name'].lower()
+                original_name = sheet_info['name']
+                
+                # Identifica DadosIdentificador
+                if any(pattern in sheet_name for pattern in ['dadosidentificador', 'dados_identificador', 'dados identificador']):
+                    dados_identificador_info = sheet_info
+                    print(f"[PASSO 1]    ✅ DadosIdentificador encontrado: {original_name}")
+                    continue
+                
+                # Pula templates
+                if any(template in sheet_name for template in ['modelo', 'template', 'verimodelorelatório']):
+                    print(f"[PASSO 1]    ⏭️ Ignorando template: {original_name}")
+                    continue
+                
+                # Adiciona aos relatórios
+                report_sheets.append(sheet_info)
+                print(f"[PASSO 1]    📊 Adicionando: {original_name}")
+            
+            print(f"\n[PASSO 1] 📊 Total de arquivos a processar: {len(report_sheets)}")
+            
+            # Processa cada relatório do Drive
+            for i, sheet_info in enumerate(report_sheets, 1):
+                sheet_name = sheet_info['name']
+                sheet_id = sheet_info['id']
+                
+                print(f"\n[PASSO 1]    [{i}/{len(report_sheets)}] Processando: {sheet_name}")
+                
+                # Lê o arquivo
+                df = read_google_sheet(sheets_service, sheet_id, sheet_name)
+                
+                if df is not None and not df.empty:
+                    # Remove segunda linha se necessário
+                    if len(df) > 1:
+                        df = df.drop(index=0).reset_index(drop=True)
+                    
+                    # Limpa
+                    df = clean_dataframe(df)
+                    
+                    # Seleciona colunas
+                    df = select_required_columns(df)
+                    
+                    if not df.empty:
+                        # Processa tipos
+                        df = process_data_types(df)
+                        
+                        # Converte Preço
+                        if 'Preço' in df.columns:
+                            df['Preço'] = df['Preço'].apply(clean_price_value)
+                            df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce')
+                            df['Preço'] = df['Preço'].fillna(0)
+                        
+                        # Remove duplicatas
+                        df, dup_removed = remove_duplicates_properly(df)
+                        
+                        all_dataframes.append(df)
+                        print(f"[PASSO 1]       ✅ {len(df)} registros válidos adicionados")
+                    else:
+                        print(f"[PASSO 1]       ⚠️ Nenhum dado válido após limpeza")
+                else:
+                    print(f"[PASSO 1]       ❌ Erro na leitura")
+        
+        # ========== ETAPA 3: Unificar todos os dados ==========
+        print(f"\n[PASSO 1] 🔗 ETAPA 3: Unificando {len(all_dataframes)} fonte(s) de dados...")
+        
+        if not all_dataframes:
+            return None, "Nenhum arquivo válido foi processado", None
+        
+        # Concatena todos os DataFrames
+        unified_df = pd.concat(all_dataframes, ignore_index=True)
+        print(f"[PASSO 1]    Total unificado: {len(unified_df)} registros")
+        
+        # Remove duplicatas do conjunto unificado
+        unified_df, dup_removed = remove_duplicates_properly(unified_df)
+        print(f"[PASSO 1]    Após remoção de duplicatas: {len(unified_df)} registros")
+        
+        # ========== ETAPA 4: Fazer MERGE com DadosIdentificador ==========
+        print(f"\n[PASSO 1] 🔗 ETAPA 4: Fazendo merge com DadosIdentificador...")
+        
+        # Tenta Google Sheets primeiro, depois Excel
+        df_dados_id = extract_dados_identificador_from_google_sheets()
+        if df_dados_id is None:
+            df_dados_id = extract_dados_identificador(arquivo_path)
+        
+        if df_dados_id is not None:
+            print(f"[PASSO 1]    ✅ DadosIdentificador carregado: {len(df_dados_id)} registros")
+            
+            # Converter ambos para string
+            unified_df['Identificador'] = unified_df['Identificador'].astype(str)
+            df_dados_id['Identificador'] = df_dados_id['Identificador'].astype(str)
+            
+            # Realiza o merge
+            unified_df = unified_df.merge(df_dados_id, on='Identificador', how='left')
+            print(f"[PASSO 1]    ✅ Merge realizado: {len(unified_df)} registros")
+            
+            # Converte 'porc' para numérico se existir
+            if 'porc' in unified_df.columns:
+                unified_df['porc'] = pd.to_numeric(unified_df['porc'], errors='coerce')
+            
+            # Converte Universo para numérico
+            if 'Universo' in unified_df.columns:
+                unified_df['Universo'] = pd.to_numeric(unified_df['Universo'], errors='coerce')
+            
+            # Calcula PMM no Target
+            if 'PMM' in unified_df.columns and 'porc' in unified_df.columns:
+                unified_df['PMM no Target'] = (unified_df['PMM'] * (unified_df['porc'] / 100)).round(2)
+                unified_df['PMM no Target'] = unified_df['PMM no Target'].fillna(0)
+                print(f"[PASSO 1]    ✅ Coluna 'PMM no Target' calculada")
+            
+            # Formata PMM com 2 casas decimais
+            if 'PMM' in unified_df.columns:
+                unified_df['PMM'] = unified_df['PMM'].round(2)
+            
+            # Preenche Universo com 0
+            if 'Universo' in unified_df.columns:
+                unified_df['Universo'] = unified_df['Universo'].fillna(0)
+            
+            # Remove coluna 'porc'
+            unified_df = unified_df.drop(columns=['porc'], errors='ignore')
+        else:
+            # Se não houver DadosIdentificador
+            if 'Universo' not in unified_df.columns:
+                unified_df['Universo'] = 0
+            if 'PMM no Target' not in unified_df.columns:
+                unified_df['PMM no Target'] = 0
+        
+        # ========== ETAPA 5: Reorganizar e salvar ==========
+        print(f"\n[PASSO 1] 📋 ETAPA 5: Reorganizando colunas...")
+        
+        expected_columns = ['Identificador', 'Data', 'Hora', 'Rádio', 'Cidade / UF',
+                           'Peça', 'Comercial', 'Status', 'PMM', 'Preço', 'Universo', 'PMM no Target']
+        existing_cols = [col for col in expected_columns if col in unified_df.columns]
+        other_cols = [col for col in unified_df.columns if col not in expected_columns]
+        final_cols = existing_cols + other_cols
+        unified_df = unified_df[final_cols]
+        
+        print(f"[PASSO 1] ✅ Compilação concluída: {len(unified_df)} registros finais")
+        print(f"[PASSO 1] 📊 Colunas: {list(unified_df.columns)}")
+        
+        # SALVA NA PASTA SAIDAS (SEM FORMATAÇÃO)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"COMPILADO_{timestamp}.xlsx"
+        save_to_saidas(unified_df, filename, apply_formatting=False)
+        
+        return unified_df, None, timestamp
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"Erro na compilação: {str(e)}", None
+
+# ==============================================================================
+# PASSO 2: RELATÓRIO MENSAL (Com busca de modelo Google Sheets)
+# ==============================================================================
+
+def setup_google_services():
+    """Configura autenticação com Google"""
+    try:
+        from google.oauth2.service_account import Credentials
+        
+        # Scopes necessários
+        SCOPES = [
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive.readonly'
+        ]
+        
+        # Carregar credenciais com scopes
+        creds = Credentials.from_service_account_file(
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'],
+            scopes=SCOPES
+        )
+        
+        gc = gspread.authorize(creds)
+        drive_service = build('drive', 'v3', credentials=creds)
+        print("[GOOGLE] ✅ Autenticação configurada com scopes corretos")
+        return gc, drive_service
+    except Exception as e:
+        print(f"[GOOGLE] ⚠️ Erro na autenticação: {str(e)}")
+        return None, None
+
+def find_modelo_relatorio(drive_service):
+    """Encontra o arquivo VeriModeloRelatorio no Google Drive"""
+    if not drive_service:
+        print("[PASSO 2] ⚠️ Google Drive não disponível")
+        return None
+    
+    try:
+        # Busca a pasta RelatorioVeri
+        folder_query = "name='RelatorioVeri' and mimeType='application/vnd.google-apps.folder'"
+        folder_results = drive_service.files().list(q=folder_query, fields="files(id, name)").execute()
+        folders = folder_results.get('files', [])
+        
+        if not folders:
+            print("[PASSO 2] ⚠️ Pasta 'RelatorioVeri' não encontrada no Google Drive")
+            return None
+        
+        folder_id = folders[0]['id']
+        
+        # Busca o modelo VeriModeloRelatorio
+        modelo_patterns = ['VeriModeloRelatorio', 'Veri Modelo Relatorio', 'Modelo Relatorio', 'Modelo']
+        
+        for pattern in modelo_patterns:
+            modelo_query = f"'{folder_id}' in parents and name contains '{pattern}' and mimeType='application/vnd.google-apps.spreadsheet'"
+            modelo_results = drive_service.files().list(q=modelo_query, fields="files(id, name)").execute()
+            modelos = modelo_results.get('files', [])
+            
+            if modelos:
+                modelo_info = modelos[0]
+                print(f"[PASSO 2] ✅ Modelo encontrado: {modelo_info['name']}")
+                return modelo_info['id']
+        
+        print("[PASSO 2] ⚠️ Modelo não encontrado no Google Drive")
+        return None
+    
+    except Exception as e:
+        print(f"[PASSO 2] ⚠️ Erro ao buscar modelo: {str(e)}")
+        return None
+
+def export_modelo_as_excel(modelo_id, drive_service):
+    """Exporta o modelo do Google Sheets como arquivo Excel usando Google Drive API"""
+    try:
+        print(f"[PASSO 2] 📥 Exportando modelo via Google Drive API...")
+        
+        if not drive_service or not modelo_id:
+            print("[PASSO 2] ❌ Drive service ou modelo_id não disponível")
+            return None
+        
+        # Faz download do arquivo Excel do Google Sheets via API
+        request = drive_service.files().export(
+            fileId=modelo_id,
+            mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        
+        file_content = request.execute()
+        
+        if not file_content or len(file_content) == 0:
+            print("[PASSO 2] ❌ Arquivo vazio baixado")
+            return None
+        
+        # Salva em arquivo temporário
+        temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+        temp_file.write(file_content)
+        temp_file.close()
+        
+        print(f"[PASSO 2] ✅ Modelo exportado: {temp_file.name} ({len(file_content)} bytes)")
+        
+        # Valida se é um arquivo Excel válido
+        try:
+            test_wb = load_workbook(temp_file.name)
+            print(f"[PASSO 2] ✅ Excel válido: {test_wb.sheetnames}")
+        except Exception as e:
+            print(f"[PASSO 2] ⚠️ Arquivo pode ser inválido: {str(e)}")
+        
+        return temp_file.name
+    
+    except Exception as e:
+        print(f"[PASSO 2] ❌ Erro ao exportar modelo: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def fill_modelo_with_data(modelo_file, aggregated_data):
+    """
+    Carrega o modelo Excel, preenche com dados agregados, preservando formatação
+    """
+    try:
+        print(f"[PASSO 2] 📋 Carregando modelo de {modelo_file}...")
+        
+        if not os.path.exists(modelo_file):
+            print(f"[PASSO 2] ❌ Arquivo não encontrado: {modelo_file}")
+            return None
+        
+        wb = load_workbook(modelo_file)
+        print(f"[PASSO 2] ✅ Workbook carregado. Abas: {wb.sheetnames}")
+        
+        ws = wb.active
+        print(f"[PASSO 2] 📄 Aba ativa: {ws.title}, Dimensões: {ws.dimensions}")
+        
+        # Encontra os headers na primeira linha
+        headers = {}
+        for col_idx in range(1, ws.max_column + 1):
+            cell_value = ws.cell(1, col_idx).value
+            if cell_value:
+                headers[str(cell_value).strip()] = col_idx
+        
+        print(f"[PASSO 2] 📍 Headers encontrados: {list(headers.keys())}")
+        
+        # Mapeia nomes de colunas - tenta várias variações
+        col_praca = None
+        col_mes = None
+        col_impacto = None
+        col_trp = None
+        col_investimento = None
+        col_pmm = None
+        col_universo = None
+        
+        # Busca Praça
+        for key in headers:
+            if 'praç' in key.lower() or 'praca' in key.lower():
+                col_praca = headers[key]
+                break
+        
+        # Busca Mês/Período
+        for key in headers:
+            if 'mês' in key.lower() or 'periodo' in key.lower() or 'periodo comercial' in key.lower():
+                col_mes = headers[key]
+                break
+        
+        # Busca colunas de dados
+        for key in headers:
+            if 'impacto' in key.lower():
+                col_impacto = headers[key]
+            elif 'trp' in key.lower():
+                col_trp = headers[key]
+            elif 'investimento' in key.lower():
+                col_investimento = headers[key]
+            elif 'pmm' in key.lower() and 'no target' not in key.lower():
+                col_pmm = headers[key]
+            elif 'universo' in key.lower():
+                col_universo = headers[key]
+        
+        print(f"[PASSO 2] 🔍 Mapeamento de colunas:")
+        print(f"   - Praça: {col_praca}")
+        print(f"   - Mês/Período: {col_mes}")
+        print(f"   - Impacto: {col_impacto}")
+        print(f"   - TRPs: {col_trp}")
+        print(f"   - Investimento: {col_investimento}")
+        print(f"   - PMM: {col_pmm}")
+        print(f"   - Universo: {col_universo}")
+        
+        if not col_praca or not col_mes:
+            print(f"[PASSO 2] ⚠️ Colunas essenciais (Praça/Mês) não encontradas!")
+            print(f"[PASSO 2] Headers disponíveis: {list(headers.keys())}")
+            return None
+        
+        updates_made = 0
+        
+        # Itera linhas do modelo (a partir da linha 2, pulando header)
+        print(f"[PASSO 2] 📊 Preenchendo modelo, total de {ws.max_row - 1} linhas...")
+        
+        for row_idx in range(2, ws.max_row + 1):
+            praca_cell = ws.cell(row=row_idx, column=col_praca)
+            mes_cell = ws.cell(row=row_idx, column=col_mes)
+            
+            if not praca_cell.value or not mes_cell.value:
+                continue
+            
+            praca_value = str(praca_cell.value).strip()
+            mes_value = str(mes_cell.value).strip()
+            
+            # Busca dados correspondentes no aggregated_data
+            found = False
+            for _, data_row in aggregated_data.iterrows():
+                praca_match = str(data_row['Praca_Mapeada']).strip() == praca_value
+                mes_match = mes_value and str(data_row['Periodo_Comercial']).strip() in mes_value
+                
+                if praca_match and mes_match:
+                    found = True
+                    # Preenche as células com dados, preservando formatação
+                    if col_impacto and 'Impacto' in data_row.index:
+                        val = round(float(data_row['Impacto']), 2) if data_row['Impacto'] else 0
+                        ws.cell(row=row_idx, column=col_impacto).value = val
+                        updates_made += 1
+                    
+                    if col_trp and 'TRPs' in data_row.index:
+                        val = round(float(data_row['TRPs']), 2) if data_row['TRPs'] else 0
+                        ws.cell(row=row_idx, column=col_trp).value = val
+                        updates_made += 1
+                    
+                    if col_investimento and 'Investimento' in data_row.index:
+                        val = round(float(data_row['Investimento']), 2) if data_row['Investimento'] else 0
+                        ws.cell(row=row_idx, column=col_investimento).value = val
+                        updates_made += 1
+                    
+                    if col_pmm and 'PMM' in data_row.index:
+                        val = round(float(data_row['PMM']), 2) if data_row['PMM'] else 0
+                        ws.cell(row=row_idx, column=col_pmm).value = val
+                        updates_made += 1
+                    
+                    if col_universo and 'Universo' in data_row.index:
+                        val = round(float(data_row['Universo']), 2) if data_row['Universo'] else 0
+                        ws.cell(row=row_idx, column=col_universo).value = val
+                        updates_made += 1
+                    
+                    break
+        
+        print(f"[PASSO 2] ✅ Preenchimento concluído: {updates_made} células atualizadas")
+        
+        # Salva o workbook modificado em bytes
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        return output
+    
+    except Exception as e:
+        print(f"[PASSO 2] ❌ Erro ao preencher modelo: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def read_modelo_relatorio(gc, sheet_id):
+    """Lê a estrutura do modelo de relatório do Google Sheets"""
+    try:
+        sheet = gc.open_by_key(sheet_id)
+        worksheet = sheet.get_worksheet(0)  # Primeira aba
+        
+        data = worksheet.get_all_values()
+        
+        if not data:
+            print("[PASSO 2] ⚠️ Modelo vazio")
+            return None
+        
+        df_modelo = pd.DataFrame(data[1:], columns=data[0])
+        print(f"[PASSO 2] ✅ Modelo carregado: {len(df_modelo)} linhas")
+        return df_modelo
+    
+    except Exception as e:
+        print(f"[PASSO 2] ⚠️ Erro ao ler modelo: {str(e)}")
+        return None
+
+def create_filled_report(df_modelo, aggregated_data):
+    """Cria uma cópia do modelo preenchida com os dados agregados"""
+    try:
+        df_report = df_modelo.copy()
+        updates_made = 0
+        
+        print("[PASSO 2] 📊 Preenchendo modelo com dados...")
+        
+        # Tenta preencher o modelo com os dados agregados
+        for index, row in df_report.iterrows():
+            praca = row.get('Praça', '')
+            mes_col = row.get('Mês', '')
+            
+            if not praca or not mes_col:
+                continue
+            
+            # Busca dados para esta praça e período
+            for _, data_row in aggregated_data.iterrows():
+                if data_row['Praca_Mapeada'] == praca and data_row['Periodo_Comercial'] in str(mes_col):
+                    # Preenche as métricas
+                    if 'Impacto' in data_row.index:
+                        df_report.at[index, 'Impacto'] = round(data_row['Impacto'], 2)
+                        updates_made += 1
+                    if 'TRPs' in data_row.index:
+                        df_report.at[index, 'TRPs'] = round(data_row['TRPs'], 2)
+                        updates_made += 1
+                    if 'Investimento' in data_row.index:
+                        df_report.at[index, 'Investimento'] = round(data_row['Investimento'], 2)
+                        updates_made += 1
+                    if 'PMM' in data_row.index:
+                        df_report.at[index, 'PMM'] = round(data_row['PMM'], 2)
+                        updates_made += 1
+                    if 'Universo' in data_row.index:
+                        df_report.at[index, 'Universo'] = round(data_row['Universo'], 2)
+                        updates_made += 1
+                    break
+        
+        print(f"[PASSO 2] ✅ Preenchimento concluído: {updates_made} células atualizadas")
+        return df_report
+    
+    except Exception as e:
+        print(f"[PASSO 2] ⚠️ Erro ao preencher modelo: {str(e)}")
+        return None
+
+def get_periodo_comercial_for_date(data):
+    """Determina o período comercial para uma data"""
+    if pd.isna(data):
+        return None
+
+    try:
+        data_date = pd.to_datetime(data, format='%d/%m/%Y').date()
+    except:
+        return None
+
+    for periodo, (inicio, fim) in PERIODOS_COMERCIAIS.items():
+        inicio_dt = datetime.strptime(inicio, '%Y-%m-%d').date()
+        fim_dt = datetime.strptime(fim, '%Y-%m-%d').date()
+
+        if inicio_dt <= data_date <= fim_dt:
+            return periodo
+
+    return None
+
+def map_cidade_to_praca(cidade):
+    """Mapeia cidade para praça"""
+    if pd.isna(cidade):
+        return None
+    
+    for praca, cidades in MAPA_PRACAS.items():
+        if cidade in cidades:
+            return praca
+
+    return None
+
+def passo2_mensal(df_compilado=None):
+    """Passo 2: Gera relatório mensal como CÓPIA DO MODELO preenchida com dados"""
+    print("[PASSO 2] Iniciando geração do relatório mensal")
+    
+    try:
+        # Se df_compilado não foi passado, busca o último da pasta saidas
+        if df_compilado is None:
+            compiled_file = get_latest_compiled_file()
+            if not compiled_file:
+                return None, "Nenhum arquivo compilado encontrado na pasta saidas/"
+            
+            print(f"[PASSO 2] 📖 Carregando: {os.path.basename(compiled_file)}")
+            df_compilado = pd.read_excel(compiled_file)
+        
+        if df_compilado.empty:
+            return None, "Dados compilados vazios"
+        
+        df = df_compilado.copy()
+        
+        # Converte Data para datetime
+        df['Data'] = pd.to_datetime(df['Data'], format='%d/%m/%Y', errors='coerce')
+        
+        df_clean = df.dropna(subset=['Data']).copy()
+        
+        # Mapeia períodos
+        df_clean['Periodo_Comercial'] = df_clean['Data'].apply(lambda x: get_periodo_comercial_for_date(x))
+        
+        # Mapeia praças
+        df_clean['Praca_Mapeada'] = df_clean['Cidade / UF'].apply(map_cidade_to_praca)
+        
+        # Filtra válidos
+        df_valid = df_clean[(df_clean['Periodo_Comercial'].notna()) & (df_clean['Praca_Mapeada'].notna())].copy()
+        
+        if df_valid.empty:
+            return None, "Nenhum dado válido após mapeamento"
+        
+        # Converte colunas numéricas ANTES de agregar
+        numeric_cols = ['PMM', 'PMM no Target', 'Universo']
+        for col in numeric_cols:
+            if col in df_valid.columns:
+                df_valid[col] = pd.to_numeric(df_valid[col], errors='coerce')
+                df_valid[col] = df_valid[col].fillna(0)
+        
+        # Limpa Preço (de "R$ 147,03" para numérico)
+        if 'Preço' in df_valid.columns:
+            df_valid['Preço'] = df_valid['Preço'].apply(clean_price_value)
+            df_valid['Preço'] = pd.to_numeric(df_valid['Preço'], errors='coerce')
+            df_valid['Preço'] = df_valid['Preço'].fillna(0)
+        
+        print(f"[PASSO 2] Dados preparados: PMM no Target sum={df_valid['PMM no Target'].sum()}")
+        
+        # PARTE 1: Agrupa por Identificador para pegar valores únicos
+        df_unique = df_valid.groupby(['Periodo_Comercial', 'Praca_Mapeada', 'Identificador']).agg({
+            'PMM': 'first',
+            'Universo': 'first'
+        }).reset_index()
+        
+        # PARTE 2: Agrega valores únicos por período e praça
+        aggregated_unique = df_unique.groupby(['Periodo_Comercial', 'Praca_Mapeada']).agg({
+            'PMM': 'sum',
+            'Universo': 'sum'
+        }).reset_index()
+        
+        # PARTE 3: Agrega TODOS os valores (com duplicatas)
+        aggregated_all = df_valid.groupby(['Periodo_Comercial', 'Praca_Mapeada']).agg({
+            'PMM': 'sum',           # Impacto
+            'PMM no Target': 'sum', # TRPs
+            'Preço': 'sum'          # Investimento
+        }).reset_index()
+        
+        # Renomeia
+        aggregated_all = aggregated_all.rename(columns={
+            'PMM': 'Impacto',
+            'PMM no Target': 'TRPs',
+            'Preço': 'Investimento'
+        })
+        
+        aggregated_unique = aggregated_unique.rename(columns={
+            'PMM': 'PMM_UniqueSum',
+            'Universo': 'Universo_UniqueSum'
+        })
+        
+        # Junta os DataFrames
+        result = aggregated_all.merge(
+            aggregated_unique,
+            on=['Periodo_Comercial', 'Praca_Mapeada'],
+            how='left'
+        )
+        
+        # Renomeia colunas finais
+        result = result.rename(columns={
+            'PMM_UniqueSum': 'PMM',
+            'Universo_UniqueSum': 'Universo',
+            'Praca_Mapeada': 'Praça',
+            'Periodo_Comercial': 'Mês'
+        })
+        
+        # Reorganiza colunas na ordem correta
+        result = result[['Praça', 'Mês', 'Impacto', 'TRPs', 'Investimento', 'Universo', 'PMM']]
+        
+        print(f"[PASSO 2] Relatório agregado gerado: {len(result)} linhas")
+        
+        # ============================================================
+        # MODELO DO GOOGLE SHEETS - DESATIVADO TEMPORARIAMENTE
+        # ============================================================
+        # TODO: Reimplementar exportação e preenchimento do modelo
+        excel_output = None
+        
+        # Se conseguiu preencher o modelo, usa ele; senão usa o agregado simples
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"RELATORIO_MENSAL_{timestamp}.xlsx"
+        
+        if excel_output:
+            # Salva o output do openpyxl
+            saidas_path = os.path.join('flask_app', 'saidas', filename)
+            os.makedirs(os.path.dirname(saidas_path), exist_ok=True)
+            
+            with open(saidas_path, 'wb') as f:
+                f.write(excel_output.getvalue())
+            
+            print(f"[SAIDAS] ✅ Arquivo salvo localmente: {filename}")
+        else:
+            # Fallback: salva o agregado simples COM FORMATAÇÃO MENSAL
+            save_to_saidas(result, filename, apply_formatting=True)
+        
+        print("[PASSO 2] ✅ Relatório mensal salvo em saidas/")
+        return result, None
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"Erro no passo 2: {str(e)}"
+
+# ==============================================================================
+# FUNÇÕES AUXILIARES: Extração de Ano e Mês Comercial
+# ==============================================================================
+
+def extrair_ano_comercial(periodo_semana_str):
+    """
+    Extrai o ano comercial da string da semana
+    Formato: "Semana 01: 29/12/2025 a 04/01/2026"
+    Retorna o ano da segunda data (fim do período) como número inteiro
+    """
+    try:
+        # Tenta encontrar a segunda data (após " a " ou após "-")
+        if ' a ' in periodo_semana_str:
+            data_fim_str = periodo_semana_str.split(' a ')[1].strip()
+        elif '-' in periodo_semana_str:
+            data_fim_str = periodo_semana_str.split('-')[1].strip()
+        else:
+            return ''
+        
+        # Extrai o ano (últimos 4 caracteres) como número inteiro
+        ano = data_fim_str.split('/')[-1]
+        return ano  # Ex: 2026 (sem apóstrofo)
+    except:
+        return ''
+
+def extrair_mes_comercial(periodo_semana_str):
+    """
+    Extrai o mês comercial da string da semana
+    Formato: "Semana 01: 29/12/2025 a 04/01/2026"
+    Determina o mês comercial baseado no período
+    Retorna formato: "Jan'26", "Fev'26", etc
+    """
+    try:
+        # Encontra a segunda data (período final)
+        if ' a ' in periodo_semana_str:
+            data_fim_str = periodo_semana_str.split(' a ')[1].strip()
+        elif '-' in periodo_semana_str:
+            data_fim_str = periodo_semana_str.split('-')[1].strip()
+        else:
+            return ''
+        
+        # Parse da data final (DD/MM/YYYY)
+        partes = data_fim_str.split('/')
+        if len(partes) == 3:
+            dia = int(partes[0])
+            mes = int(partes[1])
+            ano = partes[2]
+            
+            # Nomes dos meses abreviados em português
+            meses = {
+                1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr',
+                5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago',
+                9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
+            }
+            
+            mes_nome = meses.get(mes, '')
+            return f"{mes_nome}'{ano[-2:]}"  # Ex: "Jan'26"
+        return ''
+    except:
+        return ''
+
+# ==============================================================================
+# PASSO 3: RELATÓRIO SEMANAL
+# ==============================================================================
+
+def passo3_semanal(df_compilado=None):
+    """Passo 3: Gera relatório semanal - TOTALMENTE INDEPENDENTE"""
+    print("[PASSO 3] Iniciando geração do relatório semanal (independente)")
+    
+    try:
+        # PASSO 3 É INDEPENDENTE - busca o último compilado da pasta saidas
+        if df_compilado is None:
+            compiled_file = get_latest_compiled_file()
+            if not compiled_file:
+                return None, "Nenhum arquivo compilado encontrado na pasta saidas/"
+            
+            print(f"[PASSO 3] 📖 Carregando: {os.path.basename(compiled_file)}")
+            df_compilado = pd.read_excel(compiled_file)
+        
+        if df_compilado.empty:
+            return None, "Dados compilados vazios"
+        
+        df = df_compilado.copy()
+        
+        # Converte Data
+        df['Data'] = pd.to_datetime(df['Data'], format='%d/%m/%Y', errors='coerce')
+        df = df.dropna(subset=['Data'])
+        
+        # Calcula semana
+        df['Numero_Semana'] = df['Data'].dt.isocalendar().week
+        df['Week_Start'] = df['Data'] - pd.to_timedelta(df['Data'].dt.weekday, unit='d')
+        df['Week_End'] = df['Week_Start'] + pd.Timedelta(days=6)
+        df['Periodo_Semana'] = (
+            "Semana " + df['Numero_Semana'].astype(str).str.zfill(2) + ": " +
+            df['Week_Start'].dt.strftime('%d/%m/%Y') + " a " +
+            df['Week_End'].dt.strftime('%d/%m/%Y')
+        )
+        
+        # Converte numéricos ANTES de agregar
+        numeric_cols = ['PMM', 'PMM no Target', 'Universo']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = df[col].fillna(0)
+        
+        # Limpa Preço (de "R$ 147,03" para numérico)
+        if 'Preço' in df.columns:
+            df['Preço'] = df['Preço'].apply(clean_price_value)
+            df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce')
+            df['Preço'] = df['Preço'].fillna(0)
+        
+        print(f"[PASSO 3] Dados preparados: PMM no Target sum={df['PMM no Target'].sum()}")
+        
+        # Agrupa por Rádio e Periodo_Semana
+        grouped = df.groupby(['Rádio', 'Periodo_Semana']).agg({
+            'Identificador': 'count',        # Contagem de inserções
+            'Preço': 'sum',                  # Investimento
+            'PMM': 'sum',                    # Soma de todos os PMM (Impactos)
+            'PMM no Target': 'sum',          # TRP
+            'Universo': lambda x: df.loc[x.index].drop_duplicates('Identificador')['Universo'].sum()  # Universo único
+        }).reset_index()
+        
+        # Calcula PMM único por identificador
+        pmm_unique = df.groupby(['Rádio', 'Periodo_Semana']).apply(
+            lambda x: x.drop_duplicates('Identificador')['PMM'].sum()
+        ).reset_index(name='PMM_Unico')
+        
+        # Junta os dados
+        result_df = grouped.merge(pmm_unique, on=['Rádio', 'Periodo_Semana'])
+        
+        # Renomeia colunas
+        result_df = result_df.rename(columns={
+            'Periodo_Semana': 'Semana',
+            'Identificador': 'Inserções',
+            'Preço': 'Investimento',
+            'PMM': 'Impactos',
+            'PMM no Target': 'TRP',
+            'PMM_Unico': 'PMM'
+        })
+        
+        # Extrai Ano Comercial e Mês Comercial da coluna Semana
+        result_df['Ano Comercial'] = result_df['Semana'].apply(extrair_ano_comercial)
+        result_df['Mês Comercial'] = result_df['Semana'].apply(extrair_mes_comercial)
+        
+        # Adiciona coluna Programado (vazia)
+        result_df['Programado'] = ''
+        
+        # Reorganiza colunas (incluindo as novas)
+        final_columns = ['Rádio', 'Semana', 'Ano Comercial', 'Mês Comercial', 'Inserções', 'Investimento', 'Impactos', 'TRP', 'PMM', 'Universo', 'Programado']
+        result_df = result_df[[col for col in final_columns if col in result_df.columns]]
+        
+        # Ordena por rádio e semana
+        result_df = result_df.sort_values(['Rádio', 'Semana']).reset_index(drop=True)
+        
+        # Preenche NaN com 0 (exceto Programado)
+        numeric_columns = ['Inserções', 'Investimento', 'Impactos', 'TRP', 'PMM', 'Universo']
+        for col in numeric_columns:
+            if col in result_df.columns:
+                result_df[col] = result_df[col].fillna(0)
+        
+        print(f"[PASSO 3] Relatório semanal gerado: {len(result_df)} linhas")
+        print(f"[PASSO 3] Colunas: {list(result_df.columns)}")
+        
+        # SALVA NA PASTA SAIDAS (COM FORMATAÇÃO - IGUAL AO COLAB)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"RELATORIO_SEMANAL_{timestamp}.xlsx"
+        save_to_saidas(result_df, filename, apply_formatting=True)
+        
+        print("[PASSO 3] ✅ Relatório semanal salvo em saidas/")
+        return result_df, None
+    
+    except Exception as e:
+        return None, f"Erro no passo 3: {str(e)}"
+
+# ==============================================================================
+# FUNÇÃO: ATUALIZAR RELATORIO SEMANAL OFICIAL
+# ==============================================================================
+
+def atualizar_semanal_oficial(df_semanal_novo):
+    """
+    Atualiza o arquivo oficial RELATORIO_SEMANAL_oficial.xlsx no Google Drive
+    Adiciona apenas as linhas novas baseado em chave composta: Rádio + Semana
+    (usa apenas colunas que existem em ambos os DataFrames)
+    """
+    try:
+        # Remove colunas Unnamed do novo dataset também
+        df_semanal_novo = df_semanal_novo.loc[:, ~df_semanal_novo.columns.str.contains('^Unnamed')]
+        
+        # Normaliza a coluna Semana: converte " a " em "-" para compatibilidade
+        if 'Semana' in df_semanal_novo.columns:
+            df_semanal_novo['Semana'] = df_semanal_novo['Semana'].str.replace(' a ', '-', regex=False)
+        
+        # ID do arquivo oficial no Google Drive
+        file_id_oficial = "1o5RJnLMpMHMtvyG7FscwFhz37sxcc0_T"
+        
+        print(f"[SEMANAL OFICIAL] 🚀 Iniciando atualização (DataFrame com {len(df_semanal_novo)} linhas)")
+        print(f"[SEMANAL OFICIAL] Colunas disponíveis: {list(df_semanal_novo.columns)}")
+        
+        # Autentica com Google Drive
+        drive_service = get_authenticated_drive_service()
+        if not drive_service:
+            print(f"[SEMANAL OFICIAL] ⚠️ Não autenticado no Google Drive")
+            return {'status': 'aviso', 'mensagem': 'Não autenticado - acesse /authorize'}
+        
+        print(f"[SEMANAL OFICIAL] ✅ Autenticado no Google Drive")
+        
+        # Baixa o arquivo oficial do Google Drive
+        print(f"[SEMANAL OFICIAL] 📖 Buscando arquivo oficial no Google Drive...")
+        df_oficial = None
+        try:
+            request = drive_service.files().get_media(fileId=file_id_oficial)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            
+            fh.seek(0)
+            df_oficial = pd.read_excel(fh)
+            
+            # Remove colunas Unnamed (vazias) imediatamente
+            df_oficial = df_oficial.loc[:, ~df_oficial.columns.str.contains('^Unnamed')]
+            
+            print(f"[SEMANAL OFICIAL] ✅ Arquivo oficial baixado: {len(df_oficial)} linhas")
+            print(f"[SEMANAL OFICIAL] Colunas do arquivo oficial: {list(df_oficial.columns)}")
+            
+        except Exception as e:
+            print(f"[SEMANAL OFICIAL] ⚠️ Erro ao baixar arquivo: {str(e)}")
+            return {'status': 'erro', 'mensagem': f'Erro ao ler arquivo oficial: {str(e)}'}
+        
+        # Se o arquivo está vazio, aborta
+        if df_oficial is None or len(df_oficial) == 0:
+            print(f"[SEMANAL OFICIAL] ❌ ARQUIVO VAZIO - UPLOAD CANCELADO!")
+            return {'status': 'erro', 'mensagem': 'Arquivo oficial está vazio. Upload cancelado.'}
+        
+        print(f"[SEMANAL OFICIAL] ✓ Arquivo oficial tem {len(df_oficial)} linhas")
+        
+        # Define as colunas que serão usadas para a chave composta
+        # Usa apenas as colunas que EXISTEM em ambos os DataFrames
+        colunas_chave = []
+        colunas_possiveis = ['Rádio', 'Semana', 'Ano Comercial', 'Mês Comercial']
+        
+        for col in colunas_possiveis:
+            if col in df_oficial.columns and col in df_semanal_novo.columns:
+                colunas_chave.append(col)
+                print(f"[SEMANAL OFICIAL] ✅ Coluna '{col}' disponível em ambos os arquivos")
+            else:
+                if col not in df_oficial.columns:
+                    print(f"[SEMANAL OFICIAL] ⚠️ Coluna '{col}' NÃO ENCONTRADA no arquivo oficial")
+                if col not in df_semanal_novo.columns:
+                    print(f"[SEMANAL OFICIAL] ⚠️ Coluna '{col}' NÃO ENCONTRADA no novo relatório")
+        
+        if not colunas_chave:
+            print(f"[SEMANAL OFICIAL] ❌ Nenhuma coluna em comum para fazer comparação!")
+            return {'status': 'erro', 'mensagem': 'Nenhuma coluna em comum para fazer comparação'}
+        
+        print(f"[SEMANAL OFICIAL] 🔑 Colunas da chave composta: {colunas_chave}")
+        
+        # DEBUG: Mostra primeiras linhas de cada dataset
+        print(f"[SEMANAL OFICIAL] DEBUG - Primeiras linhas do novo dataset:")
+        print(f"[SEMANAL OFICIAL]   {df_semanal_novo[colunas_chave].head(3).to_string()}")
+        print(f"[SEMANAL OFICIAL] DEBUG - Primeiras linhas do arquivo oficial:")
+        print(f"[SEMANAL OFICIAL]   {df_oficial[colunas_chave].head(3).to_string()}")
+        
+        # Cria identificador único para cada linha usando apenas as colunas disponíveis
+        df_oficial['_chave'] = df_oficial[colunas_chave].astype(str).apply(lambda row: '|'.join(row), axis=1)
+        df_semanal_novo['_chave'] = df_semanal_novo[colunas_chave].astype(str).apply(lambda row: '|'.join(row), axis=1)
+        
+        print(f"[SEMANAL OFICIAL] Exemplo de chave oficial: {df_oficial['_chave'].iloc[0] if len(df_oficial) > 0 else 'N/A'}")
+        print(f"[SEMANAL OFICIAL] Exemplo de chave novo: {df_semanal_novo['_chave'].iloc[0] if len(df_semanal_novo) > 0 else 'N/A'}")
+        print(f"[SEMANAL OFICIAL] DEBUG - Chaves oficial (primeiras 3): {list(df_oficial['_chave'].unique()[:3])}")
+        print(f"[SEMANAL OFICIAL] DEBUG - Chaves novo (primeiras 3): {list(df_semanal_novo['_chave'].unique()[:3])}")
+        
+        # Identifica as linhas novas (que não existem no arquivo oficial)
+        chaves_oficiais = set(df_oficial['_chave'].unique())
+        chaves_novo = set(df_semanal_novo['_chave'].unique())
+        
+        print(f"[SEMANAL OFICIAL] 📊 Total de chaves ÚNICAS no oficial: {len(chaves_oficiais)}")
+        print(f"[SEMANAL OFICIAL] 📊 Total de chaves ÚNICAS no novo: {len(chaves_novo)}")
+        
+        # Verifica quantas chaves são comuns
+        chaves_comuns = chaves_oficiais.intersection(chaves_novo)
+        print(f"[SEMANAL OFICIAL] 🔄 Chaves em COMUM (já existem): {len(chaves_comuns)}")
+        
+        if len(chaves_comuns) == 0:
+            print(f"[SEMANAL OFICIAL] ⚠️ AVISO: Nenhuma chave em comum! Arquivo pode estar diferente.")
+            print(f"[SEMANAL OFICIAL]    Exemplo de chave oficial: {list(chaves_oficiais)[:1]}")
+            print(f"[SEMANAL OFICIAL]    Exemplo de chave novo: {list(chaves_novo)[:1]}")
+        
+        linhas_novas_df = df_semanal_novo[~df_semanal_novo['_chave'].isin(chaves_oficiais)]
+        
+        linhas_novas = len(linhas_novas_df)
+        print(f"[SEMANAL OFICIAL] 📊 Linhas novas encontradas: {linhas_novas}")
+        
+        if linhas_novas_df.empty:
+            print(f"[SEMANAL OFICIAL] ℹ️ Nenhuma linha nova para adicionar")
+            return {'status': 'info', 'mensagem': 'Nenhuma linha nova para adicionar'}
+        
+        # Remove a coluna temporária de ambos
+        df_oficial = df_oficial.drop(columns=['_chave'])
+        linhas_novas_df = linhas_novas_df.drop(columns=['_chave'])
+        
+        # Concatena APENAS as novas linhas ao arquivo oficial (sem alterar linhas existentes)
+        df_combinado = pd.concat([df_oficial, linhas_novas_df], ignore_index=True)
+        
+        # Ordena por Rádio e Semana (mantém ordem lógica)
+        if 'Rádio' in df_combinado.columns and 'Semana' in df_combinado.columns:
+            df_combinado = df_combinado.sort_values(['Rádio', 'Semana']).reset_index(drop=True)
+        
+        # Remove colunas Unnamed (vazias) antes de fazer upload
+        df_combinado = df_combinado.loc[:, ~df_combinado.columns.str.contains('^Unnamed')]
+        
+        # Verifica se houve mudanças
+        if len(df_combinado) == len(df_oficial):
+            print(f"[SEMANAL OFICIAL] ⚠️ Nenhuma mudança no total de linhas!")
+            return {'status': 'info', 'mensagem': 'Nenhuma mudança no arquivo'}
+        
+        print(f"[SEMANAL OFICIAL] ✅ Preparando upload: {len(df_oficial)} linhas originais + {linhas_novas} novas = {len(df_combinado)} total")
+        print(f"[SEMANAL OFICIAL] 📋 Colunas finais para upload: {list(df_combinado.columns)}")
+        
+        # Salva em memória SEM índice, SEM colunas extras
+        output = io.BytesIO()
+        
+        # Usa openpyxl para preservar formatação original
+        from openpyxl import load_workbook
+        from openpyxl.utils.dataframe import dataframe_to_rows
+        
+        # Se o arquivo original é Excel, usa openpyxl para preservar formatação
+        try:
+            # Carrega o workbook original
+            fh_original = io.BytesIO()
+            request_original = drive_service.files().get_media(fileId=file_id_oficial)
+            downloader = MediaIoBaseDownload(fh_original, request_original)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            fh_original.seek(0)
+            
+            # Abre o workbook original com openpyxl
+            wb_original = load_workbook(fh_original)
+            ws = wb_original.active
+            
+            # Encontra a última linha com dados
+            last_row = ws.max_row
+            print(f"[SEMANAL OFICIAL] 📋 Arquivo original tem {last_row} linhas (incluindo cabeçalho)")
+            
+            # Adiciona as novas linhas mantendo formatação
+            for idx, row in linhas_novas_df.iterrows():
+                new_row = last_row + idx + 1
+                for col_idx, col_name in enumerate(linhas_novas_df.columns, 1):
+                    cell = ws.cell(row=new_row, column=col_idx)
+                    cell.value = row[col_name]
+                    
+                    # Copia formatação da linha anterior (se existir)
+                    if new_row > 2:  # Pula o cabeçalho
+                        ref_cell = ws.cell(row=new_row-1, column=col_idx)
+                        if ref_cell.has_style:
+                            cell.font = copy(ref_cell.font)
+                            cell.fill = copy(ref_cell.fill)
+                            cell.border = copy(ref_cell.border)
+                            cell.number_format = ref_cell.number_format
+                            cell.alignment = copy(ref_cell.alignment)
+            
+            # Salva o workbook atualizado
+            wb_original.save(output)
+            output.seek(0)
+            
+            print(f"[SEMANAL OFICIAL] ✅ Arquivo preparado com formatação preservada")
+            
+        except Exception as e:
+            print(f"[SEMANAL OFICIAL] ⚠️ Erro ao preservar formatação: {str(e)}")
+            print(f"[SEMANAL OFICIAL] 📝 Salvando como arquivo novo (sem formatação)")
+            # Fallback: salva como arquivo novo
+            df_combinado.to_excel(output, index=False, engine='openpyxl')
+            output.seek(0)
+        
+        # Faz upload
+        print(f"[SEMANAL OFICIAL] 📤 Fazendo upload para Google Drive...")
+        media = MediaIoBaseUpload(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        request = drive_service.files().update(fileId=file_id_oficial, media_body=media)
+        request.execute()
+        
+        print(f"[SEMANAL OFICIAL] ✅ Upload concluído com sucesso!")
+        return {
+            'status': 'sucesso',
+            'mensagem': f'Adicionadas {linhas_novas} linhas',
+            'total_linhas': len(df_combinado)
+        }
+        
+    except Exception as e:
+        print(f"[SEMANAL OFICIAL] ❌ Erro ao atualizar: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {'status': 'erro', 'mensagem': f'Erro ao atualizar: {str(e)}'}
+
+# ==============================================================================
+# ROTAS FLASK
+# ==============================================================================
+
+@app.route('/')
+def index():
+    """Página inicial"""
+    return render_template('index.html')
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Recebe arquivo e processa os 3 passos"""
+    filepath = None
+    try:
+        print("[UPLOAD] 🚀 Iniciando upload...")
+        
+        if 'file' not in request.files:
+            return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
+        
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({'erro': 'Arquivo vazio'}), 400
+        
+        if not file.filename.endswith(('.xlsx', '.xls')):
+            return jsonify({'erro': 'Apenas arquivos Excel (.xlsx ou .xls)'}), 400
+        
+        print(f"[UPLOAD] 📄 Arquivo recebido: {file.filename}")
+        
+        # Salva arquivo temporário
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{datetime.now().timestamp()}_{filename}")
+        file.save(filepath)
+        print(f"[UPLOAD] 💾 Arquivo salvo em: {filepath}")
+        atualizar_progresso(1, 5, "Arquivo recebido...")
+        
+        # PASSO 1: Compilação
+        print("[UPLOAD] 🔄 Iniciando PASSO 1...")
+        atualizar_progresso(1, 10, "Compilando dados...")
+        df_compilado, erro, timestamp = passo1_compilar(filepath)  # NOVO: Captura timestamp
+        atualizar_progresso(1, 40, f"Passo 1 completo: {len(df_compilado) if df_compilado is not None else 0} registros")
+        print(f"[UPLOAD] PASSO 1 resultado - Erro: {erro}, Linhas: {len(df_compilado) if df_compilado is not None else 0}")
+        
+        if erro or df_compilado is None:
+            print(f"[UPLOAD] ❌ PASSO 1 falhou: {erro}")
+            atualizar_progresso(0, 0, "Erro no processamento")
+            return jsonify({'erro': f'Passo 1 falhou: {erro}'}), 400
+        
+        # PASSO 2: Relatório Mensal (passa o compilado da memória para ser rápido)
+        print("[UPLOAD] 🔄 Iniciando PASSO 2...")
+        atualizar_progresso(2, 45, "Gerando relatório mensal...")
+        df_mensal, erro = passo2_mensal(df_compilado)
+        atualizar_progresso(2, 70, f"Passo 2 completo: {len(df_mensal) if df_mensal is not None else 0} registros")
+        print(f"[UPLOAD] PASSO 2 resultado - Erro: {erro}, Linhas: {len(df_mensal) if df_mensal is not None else 0}")
+        if erro:
+            print(f"Aviso Passo 2: {erro}")
+            df_mensal = None
+        
+        # PASSO 3: Relatório Semanal (SEM passar df_compilado - deixa buscar da pasta)
+        print("[UPLOAD] 🔄 Iniciando PASSO 3...")
+        atualizar_progresso(3, 75, "Gerando relatório semanal...")
+        df_semanal, erro = passo3_semanal()
+        atualizar_progresso(3, 85, f"Passo 3 completo: {len(df_semanal) if df_semanal is not None else 0} registros")
+        print(f"[UPLOAD] PASSO 3 resultado - Erro: {erro}, Linhas: {len(df_semanal) if df_semanal is not None else 0}")
+        if erro:
+            print(f"Aviso Passo 3: {erro}")
+            df_semanal = None
+        
+        print("[UPLOAD] ✅ Todos os passos concluídos")
+        atualizar_progresso(3, 90, "Finalizando...")
+        
+        # 🚀 NOVO: Atualiza planilha SEMANAL oficial com as novas semanas
+        atualizar_resultado = None
+        mensagem_tabela = None
+        
+        print(f"[UPLOAD] df_semanal: {df_semanal is not None}, empty: {df_semanal.empty if df_semanal is not None else 'N/A'}")
+        
+        if df_semanal is not None and not df_semanal.empty:
+            atualizar_resultado = atualizar_semanal_oficial(df_semanal)
+            print(f"[UPLOAD] Atualização semanal oficial: {atualizar_resultado}")
+            
+            # Cria mensagem baseado no resultado
+            if atualizar_resultado and isinstance(atualizar_resultado, dict):
+                if atualizar_resultado.get('status') == 'sucesso':
+                    num_linhas = atualizar_resultado.get('total_linhas', 0)
+                    mensagem_tabela = {
+                        'tipo': 'sucesso',
+                        'cor': 'verde',
+                        'mensagem': f'✅ Novas linhas adicionadas na tabela',
+                        'detalhes': atualizar_resultado.get('mensagem', '')
+                    }
+                elif atualizar_resultado.get('status') == 'info':
+                    mensagem_tabela = {
+                        'tipo': 'info',
+                        'cor': 'azul',
+                        'mensagem': 'ℹ️ Tabela já está atualizada com os últimos dados',
+                        'detalhes': atualizar_resultado.get('mensagem', '')
+                    }
+                else:
+                    mensagem_tabela = {
+                        'tipo': 'aviso',
+                        'cor': 'laranja',
+                        'mensagem': '⚠️ Ocorreu um aviso ao atualizar a tabela',
+                        'detalhes': atualizar_resultado.get('mensagem', '')
+                    }
+            else:
+                mensagem_tabela = {
+                    'tipo': 'erro',
+                    'cor': 'vermelho',
+                    'mensagem': '❌ Erro ao atualizar a tabela oficial',
+                    'detalhes': str(atualizar_resultado)
+                }
+        else:
+            mensagem_tabela = {
+                'tipo': 'info',
+                'cor': 'cinza',
+                'mensagem': 'ℹ️ Relatório semanal não foi gerado',
+                'detalhes': 'Verifique os dados de entrada'
+            }
+        
+        # Prepara resultado
+        # timestamp já vem de passo1_compilar()
+        
+        resultado = {
+            'sucesso': True,
+            'timestamp': timestamp,
+            'compilado': {
+                'linhas': len(df_compilado),
+                'colunas': list(df_compilado.columns)
+            },
+            'mensal': {
+                'linhas': len(df_mensal) if df_mensal is not None else 0,
+                'gerado': df_mensal is not None
+            },
+            'semanal': {
+                'linhas': len(df_semanal) if df_semanal is not None else 0,
+                'gerado': df_semanal is not None
+            },
+            'semanal_oficial_atualizado': atualizar_resultado,
+            'mensagem_tabela': mensagem_tabela
+        }
+        
+        # Salva em sessão para download
+        app.df_compilado = df_compilado
+        app.df_mensal = df_mensal
+        app.df_semanal = df_semanal
+        
+        # 🚀 NOVO: Faz upload automático dos 3 arquivos para Google Drive (pasta compartilhada)
+        upload_results = upload_all_reports_to_drive(timestamp)
+        if upload_results:
+            resultado['google_drive_upload'] = upload_results
+        
+        resultado['info'] = '✅ Arquivos processados, salvos em saidas/ e enviados para Google Drive!'
+        
+        return jsonify(resultado), 200
+    
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        tb_str = traceback.format_exc()
+        print(f"[UPLOAD] ❌ Erro geral: {error_msg}")
+        print(f"[UPLOAD] Traceback:\n{tb_str}")
+        return jsonify({'erro': f'Erro geral: {error_msg}'}), 500
+    
+    finally:
+        # Limpa arquivo temporário (com tratamento de erro)
+        if filepath and os.path.exists(filepath):
+            try:
+                import time
+                time.sleep(0.5)  # Pequena pausa para garantir que o arquivo foi liberado
+                os.remove(filepath)
+                print(f"[UPLOAD] Arquivo temporário removido: {filepath}")
+            except Exception as e:
+                print(f"[UPLOAD] ⚠️ Não foi possível deletar {filepath}: {str(e)}")
+
+@app.route('/download/<tipo>')
+def download(tipo):
+    """Faz download dos arquivos gerados"""
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if tipo == 'compilado':
+            df = app.df_compilado
+            filename = f'COMPILADO_{timestamp}.xlsx'
+        elif tipo == 'mensal':
+            df = app.df_mensal
+            filename = f'RELATORIO_MENSAL_{timestamp}.xlsx'
+        elif tipo == 'semanal':
+            df = app.df_semanal
+            filename = f'RELATORIO_SEMANAL_{timestamp}.xlsx'
+        else:
+            return jsonify({'erro': 'Tipo inválido'}), 400
+        
+        if df is None or df.empty:
+            return jsonify({'erro': 'Arquivo não disponível'}), 404
+        
+        # Cria arquivo em memória
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Dados')
+        
+        output.seek(0)
+        return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=filename)
+    
+    except Exception as e:
+        return jsonify({'erro': f'Erro ao baixar: {str(e)}'}), 500
+
+if __name__ == '__main__':
+    print("🚀 Aplicação Flask iniciada!")
+    print("📍 Acesse em http://localhost:5000")
+    app.run(debug=True, host='0.0.0.0', port=5000)
