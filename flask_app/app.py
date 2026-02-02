@@ -98,10 +98,8 @@ def oauth2callback():
     try:
         creds = exchange_code_for_token(code)
         print(f"[OAUTH] ✅ Autenticação bem-sucedida!")
-        return jsonify({
-            'sucesso': True,
-            'mensagem': 'Autenticado com sucesso! Você pode fazer upload de arquivos agora.'
-        }), 200
+        # Redireciona para a página principal em vez de retornar JSON
+        return redirect('/')
     except Exception as e:
         print(f"[OAUTH] ❌ Erro na autenticação: {str(e)}")
         return jsonify({'erro': f'Erro na autenticação: {str(e)}'}), 401
