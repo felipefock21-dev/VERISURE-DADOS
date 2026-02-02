@@ -68,26 +68,36 @@ function mostrarModalOAuth({ loading, autenticado, titulo, descricao, btnTexto, 
     // Conteúdo HTML dinâmico
     let contentHTML = '';
 
-    // Background SVG (Veias Eletrônicas)
+    // Background SVG (Veias Eletrônicas Assimétricas)
+    // Coordenadas baseadas em 100x100
     const backgroundSVG = `
         <div class="circuit-bg-container">
             <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
-                <defs>
-                    <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" style="stop-color:#1a73e8;stop-opacity:0" />
-                        <stop offset="50%" style="stop-color:#1a73e8;stop-opacity:1" />
-                        <stop offset="100%" style="stop-color:#1a73e8;stop-opacity:0" />
-                    </linearGradient>
-                </defs>
-                <!-- Linhas saindo do centro (50,50) -->
-                <path class="circuit-path" d="M50 50 L50 20 L80 20" />
-                <path class="circuit-path" d="M50 50 L20 50 L20 80" style="animation-delay: 0.5s" />
-                <path class="circuit-path" d="M50 50 L80 50 L80 80" style="animation-delay: 1s" />
-                <path class="circuit-path" d="M50 50 L50 80 L20 80" style="animation-delay: 1.5s" />
-                <path class="circuit-path" d="M50 50 L20 50 L20 20" style="animation-delay: 2s" />
-                <path class="circuit-path" d="M50 50 L80 50 L80 20" style="animation-delay: 2.5s" />
-                <path class="circuit-path" d="M50 50 L35 35 L35 10" style="animation-delay: 0.2s" />
-                <path class="circuit-path" d="M50 50 L65 65 L90 65" style="animation-delay: 1.2s" />
+                <!-- Caminhos complexos e assimétricos "Veias" -->
+                
+                <!-- Ramo Esquerdo Superior - Longo e Tortuoso -->
+                <path class="circuit-path" d="M50 50 L20 50 L20 10 L5 10" style="animation-delay: 0s" />
+                
+                <!-- Ramo Direito Inferior - Ziguezague -->
+                <path class="circuit-path" d="M50 50 L80 50 L80 90 L60 90 L60 95" style="animation-delay: 0.5s" />
+                
+                <!-- Ramo Direito Superior - Curto -->
+                <path class="circuit-path" d="M50 50 L50 30 L90 30 L90 10" style="animation-delay: 1.2s" />
+                
+                <!-- Ramo Esquerdo Inferior - Extenso -->
+                <path class="circuit-path" d="M50 50 L40 50 L40 80 L10 80 L10 60" style="animation-delay: 2s" />
+                
+                <!-- Ramo Central Vertical -->
+                <path class="circuit-path" d="M50 50 L50 90" style="animation-delay: 3s" />
+                
+                <!-- Ramo Superior Cruzado -->
+                <path class="circuit-path" d="M50 50 L50 40 L70 40 L70 60 L95 60" style="animation-delay: 1.8s" />
+                
+                <!-- Ramo Solto Aleatório 1 -->
+                <path class="circuit-path" d="M10 20 L30 20 L30 40" style="animation-delay: 4s; opacity: 0.3" />
+                
+                <!-- Ramo Solto Aleatório 2 -->
+                <path class="circuit-path" d="M90 80 L70 80 L70 60" style="animation-delay: 5s; opacity: 0.3" />
             </svg>
         </div>
     `;
@@ -95,6 +105,7 @@ function mostrarModalOAuth({ loading, autenticado, titulo, descricao, btnTexto, 
     if (loading) {
         contentHTML = `
             ${backgroundSVG}
+            <div style="z-index: 2; margin-bottom: 30px;"></div>
             <div class="oauth-modal-content">
                 <div class="oauth-body" style="padding-top: 20px;">
                     <div class="loading-spinner" style="
@@ -123,10 +134,10 @@ function mostrarModalOAuth({ loading, autenticado, titulo, descricao, btnTexto, 
 
         contentHTML = `
             ${backgroundSVG}
+            <!-- Logo Fora da Caixa e Maior (90px) -->
+            <img src="/static/logo-emidias.png" alt="E-MIDIAS" style="height: 90px; margin-bottom: 40px; position: relative; z-index: 3;">
+            
             <div class="oauth-modal-content">
-                <div class="oauth-header" style="margin-bottom: 30px;">
-                    <img src="/static/logo-emidias.png" alt="E-MIDIAS" style="height: 60px; margin-bottom: 20px; display: block; margin-left: auto; margin-right: auto;">
-                </div>
                 <div class="oauth-body">
                     <h2 style="font-family: 'Google Sans', Roboto, sans-serif; font-size: 1.5rem; margin-bottom: 10px;">${titulo}</h2>
                     <p style="font-family: Roboto, sans-serif; margin-bottom: 40px;">${descricao}</p>
