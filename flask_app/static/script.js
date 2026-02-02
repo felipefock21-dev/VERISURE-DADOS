@@ -15,6 +15,52 @@ let resultado = null;
 let eventSource = null;
 
 // =============================================================================
+// VERIFICAÇÃO DE AUTENTICAÇÃO OAUTH
+// =============================================================================
+
+// Verificar status OAuth ao carregar a página
+window.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const response = await fetch('/oauth-status');
+        const data = await response.json();
+
+        if (!data.autenticado) {
+            mostrarModalOAuth();
+        }
+    } catch (error) {
+        console.error('Erro ao verificar OAuth:', error);
+    }
+});
+
+function mostrarModalOAuth() {
+    // Criar modal se não existir
+    let modal = document.getElementById('oauthModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'oauthModal';
+        modal.className = 'oauth-modal';
+        modal.innerHTML = `
+            <div class="oauth-modal-content">
+                <div class="oauth-header">
+                    <h1>VERISURE</h1>
+                    <p>COMPILADOR DE RELATÓRIOS</p>
+                </div>
+                <div class="oauth-body">
+                    <h2>Conectar Google Drive</h2>
+                    <p>Autorize a aplicação VERISURE a acessar sua conta Google Drive para sincronizar e salvar relatórios automaticamente.</p>
+                    <button class="oauth-btn" onclick="window.location.href='/authorize'">
+                        Conectar ao Google Drive
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    modal.style.display = 'flex';
+}
+
+
+// =============================================================================
 // EVENTOS DE UPLOAD
 // =============================================================================
 
@@ -36,7 +82,7 @@ uploadArea.addEventListener('dragleave', () => {
 uploadArea.addEventListener('drop', (e) => {
     e.preventDefault();
     uploadArea.classList.remove('drag-over');
-    
+
     const files = e.dataTransfer.files;
     if (files.length > 0) {
         fileInput.files = files;
@@ -53,48 +99,48 @@ fileInput.addEventListener('change', processarArquivo);
 
 async function processarArquivo() {
     const file = fileInput.files[0];
-    
+
     if (!file) return;
-    
+
     // Validação
     if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
         mostrarErro('❌ Apenas arquivos Excel (.xlsx ou .xls) são aceitos!');
         return;
     }
-    
+
     if (file.size > 500 * 1024 * 1024) {
         mostrarErro('❌ Arquivo muito grande (máximo 500MB)');
         return;
     }
-    
+
     // Mostrar progresso
     uploadSection.style.display = 'none';
     progressSection.style.display = 'block';
     resultSection.style.display = 'none';
     errorSection.style.display = 'none';
-    
+
     // Mostrar barra de carregamento
     mostrarProgressBar();
-    
+
     // Conectar ao SSE para receber progresso em tempo real
     conectarSSE();
-    
+
     // Simular progresso dos passos
     ativarPasso(1);
-    
+
     try {
         // Criar FormData
         const formData = new FormData();
         formData.append('file', file);
-        
+
         // Enviar para servidor com tracking de progresso
         const response = await fetch('/upload', {
             method: 'POST',
             body: formData
         });
-        
+
         const data = await response.json();
-        
+
         if (response.ok) {
             resultado = data;
             atualizarProgressBar(100);
@@ -118,13 +164,13 @@ async function processarArquivo() {
 
 function conectarSSE() {
     eventSource = new EventSource('/progresso');
-    
-    eventSource.onmessage = function(event) {
+
+    eventSource.onmessage = function (event) {
         try {
             const data = JSON.parse(event.data);
             console.log('[SSE] Progresso:', data);
             atualizarProgressBar(data.percentual);
-            
+
             // Atualizar etapa visual
             if (data.etapa > 0 && data.etapa <= 3) {
                 ativarPasso(data.etapa);
@@ -133,8 +179,8 @@ function conectarSSE() {
             console.error('[SSE] Erro ao processar:', error);
         }
     };
-    
-    eventSource.onerror = function(error) {
+
+    eventSource.onerror = function (error) {
         console.log('[SSE] Conexão finalizada');
         // Desconectar automaticamente ao erro
         desconectarSSE();
@@ -156,23 +202,23 @@ function mostrarProgressBar() {
     const progressContainer = document.getElementById('progressContainer');
     const progressFill = document.getElementById('progressFill');
     const progressText = document.getElementById('progressText');
-    
+
     console.log('[PROGRESS] mostrarProgressBar() chamado');
     console.log('[PROGRESS] progressContainer:', progressContainer);
     console.log('[PROGRESS] progressFill:', progressFill);
     console.log('[PROGRESS] progressText:', progressText);
-    
+
     if (progressContainer) {
         progressContainer.style.display = 'block';
         console.log('[PROGRESS] ✅ progressContainer display: block');
     } else {
         console.error('[PROGRESS] ❌ progressContainer não encontrado!');
     }
-    
+
     if (progressFill) {
         progressFill.style.width = '0%';
     }
-    
+
     if (progressText) {
         progressText.textContent = 'Processando... 0%';
     }
@@ -181,10 +227,10 @@ function mostrarProgressBar() {
 function atualizarProgressBar(percentual) {
     const progressFill = document.getElementById('progressFill');
     const progressText = document.getElementById('progressText');
-    
+
     percentual = Math.min(percentual, 100);
     percentual = Math.max(percentual, 0);
-    
+
     progressFill.style.width = percentual + '%';
     progressText.textContent = `Processando... ${Math.round(percentual)}%`;
 }
@@ -203,19 +249,19 @@ function ativarPasso(numero) {
     document.querySelectorAll('.step').forEach(step => {
         step.classList.remove('active', 'completed');
     });
-    
+
     // Ativa o passo atual
     const stepAtual = document.getElementById(`step${numero}`);
     if (stepAtual) {
         stepAtual.classList.add('active');
-        
+
         // Atualizar status
         const statusSpan = stepAtual.querySelector('.step-status');
         if (statusSpan) {
             statusSpan.textContent = '⏳';
         }
     }
-    
+
     // Marcar passos anteriores como completos
     for (let i = 1; i < numero; i++) {
         const stepAnterior = document.getElementById(`step${i}`);
@@ -249,7 +295,7 @@ function finalizarPasso(numero, sucesso = true) {
 
 function abrirModalSucesso(mensagemTabela) {
     const modal = document.getElementById('successModal');
-    
+
     // Se houver mensagem da tabela, adiciona ela no modal
     if (mensagemTabela) {
         const mensagemDiv = document.getElementById('mensagemTabela');
@@ -262,16 +308,16 @@ function abrirModalSucesso(mensagemTabela) {
                 'vermelho': '#F44336',
                 'cinza': '#9E9E9E'
             };
-            
+
             const cor = cores[mensagemTabela.cor] || '#2196F3';
-            
+
             console.log('[MODAL] Exibindo mensagem:', mensagemTabela);
-            
+
             let detalhesHTML = '';
             if (mensagemTabela.detalhes) {
                 detalhesHTML = `<div style="font-size: 12px; margin-top: 8px; opacity: 0.9;">${mensagemTabela.detalhes}</div>`;
             }
-            
+
             mensagemDiv.innerHTML = `
                 <div style="
                     background-color: ${cor}; 
@@ -293,7 +339,7 @@ function abrirModalSucesso(mensagemTabela) {
     } else {
         console.log('[MODAL] Nenhuma mensagem da tabela para exibir');
     }
-    
+
     modal.style.display = 'flex';
     setTimeout(() => {
         modal.classList.add('show');
@@ -315,43 +361,43 @@ function fecharModal() {
 function mostrarResultado(data) {
     // Esconder barra de progresso
     esconderProgressBar();
-    
+
     // Simular progresso dos passos
     setTimeout(() => {
         finalizarPasso(1);
         ativarPasso(2);
     }, 500);
-    
+
     setTimeout(() => {
         finalizarPasso(2);
         ativarPasso(3);
     }, 1500);
-    
+
     setTimeout(() => {
         finalizarPasso(3);
-        
+
         // Atualizar interface
         document.getElementById('compiladoInfo').textContent = `${data.compilado.linhas} registros`;
-        
-        document.getElementById('mensalInfo').textContent = data.mensal.gerado 
-            ? `${data.mensal.linhas} registros` 
+
+        document.getElementById('mensalInfo').textContent = data.mensal.gerado
+            ? `${data.mensal.linhas} registros`
             : 'Não gerado';
-        
-        document.getElementById('semanalInfo').textContent = data.semanal.gerado 
-            ? `${data.semanal.linhas} registros` 
+
+        document.getElementById('semanalInfo').textContent = data.semanal.gerado
+            ? `${data.semanal.linhas} registros`
             : 'Não gerado';
-        
+
         // Habilitar/desabilitar botões de download
         document.getElementById('downloadMensalBtn').disabled = !data.mensal.gerado;
         document.getElementById('downloadSemanalBtn').disabled = !data.semanal.gerado;
-        
+
         // Mostrar seção de resultado
         progressSection.style.display = 'none';
         resultSection.style.display = 'block';
-        
+
         // Abrir modal de sucesso com mensagem da tabela
         abrirModalSucesso(data.mensagem_tabela);
-        
+
     }, 2500);
 }
 
@@ -364,7 +410,7 @@ function mostrarErro(mensagem) {
     progressSection.style.display = 'none';
     resultSection.style.display = 'none';
     errorSection.style.display = 'block';
-    
+
     document.getElementById('errorMessage').textContent = mensagem;
 }
 
@@ -375,21 +421,21 @@ function mostrarErro(mensagem) {
 async function downloadArquivo(tipo) {
     try {
         const response = await fetch(`/download/${tipo}`);
-        
+
         if (!response.ok) {
             alert('❌ Erro ao baixar arquivo');
             return;
         }
-        
+
         // Obter nome do arquivo do header
         const contentDisposition = response.headers.get('content-disposition');
         let filename = `${tipo}.xlsx`;
-        
+
         if (contentDisposition) {
             const match = contentDisposition.match(/filename="?([^"]+)"?/);
             if (match) filename = match[1];
         }
-        
+
         // Download
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -400,7 +446,7 @@ async function downloadArquivo(tipo) {
         a.click();
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
-        
+
     } catch (error) {
         alert(`❌ Erro ao baixar: ${error.message}`);
     }
@@ -414,13 +460,13 @@ function resetarFormulario() {
     // Limpar input
     fileInput.value = '';
     resultado = null;
-    
+
     // Mostrar upload section novamente
     uploadSection.style.display = 'block';
     progressSection.style.display = 'none';
     resultSection.style.display = 'none';
     errorSection.style.display = 'none';
-    
+
     // Resetar passos
     document.querySelectorAll('.step').forEach(step => {
         step.classList.remove('active', 'completed');
