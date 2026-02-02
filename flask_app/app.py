@@ -850,6 +850,62 @@ def process_data_types(df):
 
     return df
 
+def calculate_mes_comercial(df):
+    """Calcula e atualiza o Mês Comercial com base na Data para o calendário 2026"""
+    if df.empty or 'Data' not in df.columns:
+        return df
+
+    try:
+        print("[PROCESSAMENTO] 📅 Atualizando Mês Comercial (Calendário 2026)...")
+        
+        # Definição do Calendário Comercial 2026
+        # (Mês, Data Início, Data Fim)
+        calendar_2026 = [
+            ('Janeiro', '2025-12-29', '2026-01-25'),
+            ('Fevereiro', '2026-01-26', '2026-02-22'),
+            ('Março', '2026-02-23', '2026-03-29'),
+            ('Abril', '2026-03-30', '2026-04-26'),
+            ('Maio', '2026-04-27', '2026-05-24'),
+            ('Junho', '2026-05-25', '2026-06-28'),
+            ('Julho', '2026-06-29', '2026-07-26'),
+            ('Agosto', '2026-07-27', '2026-08-30'),
+            ('Setembro', '2026-08-31', '2026-09-27'),
+            ('Outubro', '2026-09-28', '2026-10-25'),
+            ('Novembro', '2026-10-26', '2026-11-29'),
+            ('Dezembro', '2026-11-30', '2026-12-27')
+        ]
+        
+        # Converter para datetime temporariamente para comparação
+        # A coluna Data está em string 'dd/mm/yyyy'
+        temp_dates = pd.to_datetime(df['Data'], format='%d/%m/%Y', errors='coerce')
+        
+        # Cria nova série para o mês
+        meses_comerciais = pd.Series(index=df.index, dtype='object')
+        
+        for mes, start, end in calendar_2026:
+            start_dt = pd.to_datetime(start)
+            end_dt = pd.to_datetime(end)
+            
+            # Máscara para datas dentro do range
+            mask = (temp_dates >= start_dt) & (temp_dates <= end_dt)
+            meses_comerciais[mask] = mes
+            
+        # Atualiza o DataFrame (onde houve match)
+        # Se não houve match (fora de 2026), mantemos o valor original se existir, ou vazio
+        if 'Mês Comercial' in df.columns:
+            df['Mês Comercial'] = meses_comerciais.combine_first(df['Mês Comercial'])
+        else:
+            df['Mês Comercial'] = meses_comerciais
+            
+        # Opcional: Atualizar 'Ano Comercial' para 2026 se estiver dentro dos meses
+        # (Mas cuidado com Janeiro que pega Dez 2025)
+        # O user não pediu explicitamente, mas é bom garantir consistência se 'Ano Comercial' for usado
+        
+    except Exception as e:
+        print(f"[ERRO] Falha ao calcular Mês Comercial: {str(e)}")
+        
+    return df
+
 def remove_duplicates_properly(df):
     """Remove duplicatas baseado em Identificador, Data, Hora, Semana, Ano Comercial e Mês Comercial"""
     if df.empty:
@@ -922,6 +978,9 @@ def passo1_compilar(arquivo_path):
         
         if not df_upload.empty:
             df_upload = process_data_types(df_upload)
+            
+            # Recalcula Mês Comercial (2026)
+            df_upload = calculate_mes_comercial(df_upload)
             
             # Converte Preço
             if 'Preço' in df_upload.columns:
@@ -996,6 +1055,9 @@ def passo1_compilar(arquivo_path):
                     if not df.empty:
                         # Processa tipos
                         df = process_data_types(df)
+                        
+                        # Recalcula Mês Comercial (2026)
+                        df = calculate_mes_comercial(df)
                         
                         # Converte Preço
                         if 'Preço' in df.columns:
