@@ -69,23 +69,20 @@ function mostrarModalOAuth({ loading, autenticado, titulo, descricao, btnTexto, 
     if (loading) {
         modal.innerHTML = `
             <div class="oauth-modal-content">
-                <div class="oauth-body" style="padding-top: 40px;">
-                    <h2>Verificando Acesso...</h2>
+                <div class="oauth-body" style="padding-top: 20px;">
                     <div class="loading-spinner" style="
-                        width: 40px; height: 40px; 
-                        border: 4px solid #f3f3f3; 
-                        border-top: 4px solid #7B68EE; 
+                        width: 48px; height: 48px; 
+                        border: 4px solid #f1f3f4; 
+                        border-top: 4px solid #1a73e8; 
                         border-radius: 50%; 
                         animation: spin 1s linear infinite;
-                        margin: 20px auto;"></div>
+                        margin: 0 auto 24px auto;"></div>
+                    <h2 style="font-size: 1.1rem; color: #5f6368; font-weight: 400;">Verificando Acesso...</h2>
                 </div>
             </div>
         `;
     } else {
-        const iconHTML = autenticado ?
-            `<div style="font-size: 3rem; margin-bottom: 20px;">✅</div>` :
-            `<div style="font-size: 3rem; margin-bottom: 20px;">🔐</div>`;
-
+        // Ícones removidos para visual clean estilo Google
         modal.innerHTML = `
             <div class="oauth-modal-content">
                 <div class="oauth-header">
@@ -93,7 +90,6 @@ function mostrarModalOAuth({ loading, autenticado, titulo, descricao, btnTexto, 
                     <p>COMPILADOR DE RELATÓRIOS</p>
                 </div>
                 <div class="oauth-body">
-                    ${iconHTML}
                     <h2>${titulo}</h2>
                     <p>${descricao}</p>
                     <button class="oauth-btn" id="oauthActionBtn">
