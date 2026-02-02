@@ -20,25 +20,72 @@ let eventSource = null;
 
 // Verificar status OAuth ao carregar a página
 window.addEventListener('DOMContentLoaded', async () => {
+    // 1. Mostrar modal IMEDIATAMENTE em estado de loading
+    mostrarModalOAuth({ loading: true });
+
     try {
         const response = await fetch('/oauth-status');
         const data = await response.json();
 
-        if (!data.autenticado) {
-            mostrarModalOAuth();
+        if (data.autenticado) {
+            // ESTADO: JÁ LOGADO - Botão apenas libera o acesso
+            mostrarModalOAuth({
+                autenticado: true,
+                titulo: "Bem-vindo de volta!",
+                descricao: "Sua conexão com o Google Drive está ativa e segura.",
+                btnTexto: "Acessar Sistema",
+                btnAcao: () => fecharModalOAuth()
+            });
+            atualizarStatusAuthUI(true);
+        } else {
+            // ESTADO: NÃO LOGADO - Botão leva ao login
+            mostrarModalOAuth({
+                autenticado: false,
+                titulo: "Conectar Google Drive",
+                descricao: "Autorize a aplicação VERISURE a acessar sua conta Google Drive para sincronizar e salvar relatórios automaticamente.",
+                btnTexto: "Conectar ao Google Drive",
+                btnAcao: () => window.location.href = '/authorize'
+            });
+            atualizarStatusAuthUI(false);
         }
     } catch (error) {
         console.error('Erro ao verificar OAuth:', error);
+        mostrarErro('Erro de conexão ao verificar segurança.');
     }
 });
 
-function mostrarModalOAuth() {
-    // Criar modal se não existir
+function mostrarModalOAuth({ loading, autenticado, titulo, descricao, btnTexto, btnAcao } = {}) {
     let modal = document.getElementById('oauthModal');
+
+    // Criar estrutura se não existir
     if (!modal) {
         modal = document.createElement('div');
         modal.id = 'oauthModal';
         modal.className = 'oauth-modal';
+        document.body.appendChild(modal);
+    }
+
+    // Conteúdo HTML dinâmico
+    if (loading) {
+        modal.innerHTML = `
+            <div class="oauth-modal-content">
+                <div class="oauth-body" style="padding-top: 40px;">
+                    <h2>Verificando Acesso...</h2>
+                    <div class="loading-spinner" style="
+                        width: 40px; height: 40px; 
+                        border: 4px solid #f3f3f3; 
+                        border-top: 4px solid #7B68EE; 
+                        border-radius: 50%; 
+                        animation: spin 1s linear infinite;
+                        margin: 20px auto;"></div>
+                </div>
+            </div>
+        `;
+    } else {
+        const iconHTML = autenticado ?
+            `<div style="font-size: 3rem; margin-bottom: 20px;">✅</div>` :
+            `<div style="font-size: 3rem; margin-bottom: 20px;">🔐</div>`;
+
         modal.innerHTML = `
             <div class="oauth-modal-content">
                 <div class="oauth-header">
@@ -46,18 +93,47 @@ function mostrarModalOAuth() {
                     <p>COMPILADOR DE RELATÓRIOS</p>
                 </div>
                 <div class="oauth-body">
-                    <h2>Conectar Google Drive</h2>
-                    <p>Autorize a aplicação VERISURE a acessar sua conta Google Drive para sincronizar e salvar relatórios automaticamente.</p>
-                    <button class="oauth-btn" onclick="window.location.href='/authorize'">
-                        Conectar ao Google Drive
+                    ${iconHTML}
+                    <h2>${titulo}</h2>
+                    <p>${descricao}</p>
+                    <button class="oauth-btn" id="oauthActionBtn">
+                        ${btnTexto}
                     </button>
                 </div>
             </div>
         `;
-        document.body.appendChild(modal);
+
+        // Adicionar evento ao botão dinamicamente
+        const btn = document.getElementById('oauthActionBtn');
+        if (btn && btnAcao) {
+            btn.onclick = btnAcao;
+        }
     }
+
     modal.style.display = 'flex';
 }
+
+function fecharModalOAuth() {
+    const modal = document.getElementById('oauthModal');
+    if (modal) {
+        modal.style.opacity = '0';
+        modal.style.transition = 'opacity 0.5s ease';
+        setTimeout(() => {
+            modal.style.display = 'none';
+        }, 500);
+    }
+}
+
+function atualizarStatusAuthUI(isAuth) {
+    const statusDot = document.querySelector('.status-dot');
+    const authText = document.getElementById('authText');
+
+    if (statusDot && authText) {
+        statusDot.className = isAuth ? 'status-dot authenticated' : 'status-dot loading';
+        authText.textContent = isAuth ? 'Conectado' : 'Desconectado';
+    }
+}
+
 
 
 // =============================================================================
