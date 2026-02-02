@@ -1087,6 +1087,18 @@ box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
    OAUTH MODAL - GOOGLE STYLE (CLEAN & PROFESSIONAL)
    ============================================================================= */
 
+@keyframes expandMask {
+    0% {
+        -webkit-mask-size: 0% 0%;
+        mask-size: 0% 0%;
+    }
+
+    100% {
+        -webkit-mask-size: 200% 200%;
+        mask-size: 200% 200%;
+    }
+}
+
 .oauth-modal {
     display: none;
     position: fixed;
@@ -1094,91 +1106,70 @@ box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(240, 242, 245, 0.8);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    /* Fundo base branco para esconder o site */
+    background-color: #ffffff;
     z-index: 9999;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
+}
+
+/* Camada 1: Animação Circuit Board */
+.oauth-modal::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    /* Pattern de Circuito (SVG Encoded) */
+    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%231a73e8' fill-opacity='0.15'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+    background-size: 100px 100px;
+
+    /* Máscara Radial Animada */
+    -webkit-mask-image: radial-gradient(circle, black 40%, transparent 60%);
+    mask-image: radial-gradient(circle, black 40%, transparent 60%);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+
+    animation: expandMask 4s ease-out forwards;
+    z-index: 0;
+}
+
+/* Camada 2: Overlay Fosco (Frosted Glass) */
+.oauth-modal::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    /* Branco semitransparente para ofuscar o circuito */
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 1;
 }
 
 .oauth-modal-content {
     background: white;
+    /* Card sólido */
     border-radius: 28px;
     padding: 48px 40px;
     max-width: 450px;
     width: 90%;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    /* Sombra mais forte para destacar do fundo */
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.05);
     text-align: center;
     border: 1px solid rgba(0, 0, 0, 0.05);
+    position: relative;
+    z-index: 2;
+    /* Acima do overlay */
 }
 
-.oauth-header {
-    margin-bottom: 24px;
-}
 
-.oauth-header h1 {
-    color: #202124;
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: 1.75rem;
-    font-weight: 500;
-    margin: 0 0 8px 0;
-    letter-spacing: -0.5px;
-}
-
-.oauth-header p {
-    color: #5f6368;
-    font-size: 0.95rem;
-    margin: 0;
-    font-weight: 400;
-}
-
-.oauth-body h2 {
-    color: #202124;
-    font-size: 1.25rem;
-    margin: 0 0 12px 0;
-    font-weight: 400;
-}
-
-.oauth-body p {
-    color: #5f6368;
-    font-size: 0.95rem;
-    line-height: 1.5;
-    margin: 0 0 32px 0;
-}
-
-.oauth-btn {
-    background: #1a73e8;
-    color: white;
-    border: none;
-    padding: 12px 24px;
-    border-radius: 24px;
-    font-family: 'Google Sans', 'Roboto', arial, sans-serif;
-    font-size: 0.95rem;
-    font-weight: 500;
-    cursor: pointer;
-    width: auto;
-    min-width: 200px;
-    transition: background-color 0.2s box-shadow 0.2s;
-    box-shadow: 0 1px 3px rgba(60, 64, 67, 0.3);
-}
-
-.oauth-btn:hover {
-    background: #1765cc;
-    box-shadow: 0 2px 6px rgba(60, 64, 67, 0.3);
-    transform: none;
-}
-
-.oauth-btn:active {
-    background: #155bb5;
-    box-shadow: none;
-    transform: none;
-}
-
-.loading-spinner {
-    border-color: #f1f3f4 !important;
-    border-top-color: #1a73e8 !important;
-}
 
 /* SPINNER ANIMATION */
 @keyframes spin {
