@@ -21,7 +21,6 @@ from googleapiclient.http import MediaFileUpload
 from openpyxl import load_workbook
 from copy import copy
 from openpyxl.utils import get_column_letter
-import requests
 import tempfile
 import sys
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
