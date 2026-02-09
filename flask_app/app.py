@@ -685,21 +685,42 @@ def apply_manual_formatting(output_path, df_output):
 def save_to_saidas(df, filename, apply_formatting=False):
     """Salva DataFrame em arquivo Excel na pasta saidas de forma eficiente em memória"""
     try:
+        import time
+        start_time = time.time()
+        
         saidas_path = app.config['SAIDAS_FOLDER']
         filepath = os.path.join(saidas_path, filename)
         
+        # Diagnóstico de memória
+        mem_info = psutil.Process().memory_info()
+        mem_mb = mem_info.rss / (1024 * 1024)
+        
         print(f"[SAIDAS] 📝 Salvando arquivo: {filename}")
-        print(f"[SAIDAS]    Registros: {len(df)}, apply_formatting={apply_formatting}")
+        print(f"[SAIDAS]    Registros: {len(df)}, Colunas: {len(df.columns)}")
+        print(f"[SAIDAS]    Memória atual: {mem_mb:.1f}MB")
+        print(f"[SAIDAS]    apply_formatting={apply_formatting}")
         
         # Preparar colunas para exportação (sem fazer cópia completa)
-        # Remove colunas Unnamed se existirem
         cols_to_export = [col for col in df.columns if not str(col).startswith('Unnamed')]
         
-        # Salvar diretamente sem cópia desnecessária
+        # Para arquivos muito grandes (>50k linhas), usar CSV como fallback
+        if len(df) > 50000:
+            print(f"[SAIDAS] ⚠️ Arquivo grande ({len(df)} linhas), usando CSV para evitar timeout...")
+            csv_filepath = filepath.replace('.xlsx', '.csv')
+            df[cols_to_export].to_csv(csv_filepath, index=False, encoding='utf-8-sig')
+            print(f"[SAIDAS] ✅ Arquivo CSV salvo: {csv_filepath}")
+            elapsed = time.time() - start_time
+            print(f"[SAIDAS] ⏱️ Tempo de salvamento: {elapsed:.2f}s")
+            return csv_filepath
+        
+        # Salvar Excel normalmente
+        print(f"[SAIDAS] 💾 Iniciando escrita Excel...")
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
             df[cols_to_export].to_excel(writer, index=False, sheet_name='Dados')
         
-        print(f"[SAIDAS] ✅ Arquivo salvo localmente: {filename}")
+        elapsed = time.time() - start_time
+        print(f"[SAIDAS] ✅ Arquivo Excel salvo: {filepath}")
+        print(f"[SAIDAS] ⏱️ Tempo de salvamento: {elapsed:.2f}s")
         
         # 🎨 Aplicar formatação SOMENTE para MENSAL e SEMANAL
         if apply_formatting:
@@ -709,12 +730,25 @@ def save_to_saidas(df, filename, apply_formatting=False):
         else:
             print(f"[SAIDAS] ℹ️ Formatação não aplicada (apply_formatting=False)")
         
+        # Libera memória após salvar
+        gc.collect()
+        
         return filepath
     except Exception as e:
         print(f"[SAIDAS] ❌ Erro ao salvar: {str(e)}")
         import traceback
         traceback.print_exc()
-        return None
+        
+        # Fallback: tentar salvar como CSV
+        try:
+            print(f"[SAIDAS] 🔄 Tentando fallback para CSV...")
+            csv_filepath = filepath.replace('.xlsx', '.csv')
+            df[cols_to_export].to_csv(csv_filepath, index=False, encoding='utf-8-sig')
+            print(f"[SAIDAS] ✅ Arquivo CSV salvo como fallback: {csv_filepath}")
+            return csv_filepath
+        except Exception as csv_error:
+            print(f"[SAIDAS] ❌ Fallback CSV também falhou: {str(csv_error)}")
+            return None
 
 # ==============================================================================
 # FUNÇÕES DE LIMPEZA E PROCESSAMENTO
@@ -1254,9 +1288,16 @@ def passo1_compilar(arquivo_path):
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"COMPILADO_{timestamp}.xlsx"
-        save_to_saidas(unified_df, filename, apply_formatting=False)
         
-        atualizar_progresso(1, 40, "Passo 1 concluído!")
+        saved_path = save_to_saidas(unified_df, filename, apply_formatting=False)
+        
+        if saved_path:
+            print(f"[PASSO 1] ✅ Arquivo salvo com sucesso: {saved_path}")
+            atualizar_progresso(1, 40, "Passo 1 concluído!")
+        else:
+            print(f"[PASSO 1] ⚠️ Falha ao salvar arquivo, mas continuando...")
+            atualizar_progresso(1, 40, "Passo 1 concluído (arquivo não salvo)")
+        
         return unified_df, None, timestamp
     
     except Exception as e:
