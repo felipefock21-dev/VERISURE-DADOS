@@ -680,47 +680,37 @@ def apply_manual_formatting(output_path, df_output):
 
 
 def save_to_saidas(df, filename, apply_formatting=False):
-
-    """Salva DataFrame em arquivo Excel na pasta saidas. Aplica formatação SOMENTE se apply_formatting=True"""
+    """Salva DataFrame em arquivo Excel na pasta saidas de forma eficiente em memória"""
     try:
         saidas_path = app.config['SAIDAS_FOLDER']
         filepath = os.path.join(saidas_path, filename)
         
-        # Garante que colunas numéricas sejam salvs como números
-        df_export = df.copy()
-        
-        # Remove colunas Unnamed (vazias)
-        df_export = df_export.loc[:, ~df_export.columns.str.contains('^Unnamed')]
-        
-        # Converte Preço para numérico se ainda estiver em string
-        if 'Preço' in df_export.columns:
-            df_export['Preço'] = df_export['Preço'].apply(clean_price_value)
-            df_export['Preço'] = pd.to_numeric(df_export['Preço'], errors='coerce')
-            df_export['Preço'] = df_export['Preço'].fillna(0)
-        
         print(f"[SAIDAS] 📝 Salvando arquivo: {filename}")
-        print(f"[SAIDAS]    apply_formatting={apply_formatting}")
+        print(f"[SAIDAS]    Registros: {len(df)}, apply_formatting={apply_formatting}")
         
+        # Preparar colunas para exportação (sem fazer cópia completa)
+        # Remove colunas Unnamed se existirem
+        cols_to_export = [col for col in df.columns if not str(col).startswith('Unnamed')]
+        
+        # Salvar diretamente sem cópia desnecessária
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            df_export.to_excel(writer, index=False, sheet_name='Dados')
+            df[cols_to_export].to_excel(writer, index=False, sheet_name='Dados')
         
         print(f"[SAIDAS] ✅ Arquivo salvo localmente: {filename}")
         
         # 🎨 Aplicar formatação SOMENTE para MENSAL e SEMANAL
         if apply_formatting:
             print(f"[SAIDAS] 🎨 Chamando apply_manual_formatting...")
-            apply_manual_formatting(filepath, df_export)
+            apply_manual_formatting(filepath, df[cols_to_export])
             print(f"[SAIDAS] ✅ Formatação aplicada com sucesso!")
         else:
             print(f"[SAIDAS] ℹ️ Formatação não aplicada (apply_formatting=False)")
         
-        # Google Drive desabilitado temporariamente (Service Accounts não têm quota em Drive pessoal)
-        # Para fazer upload, seria necessário usar Shared Drive (Drive organizacional)
-        # upload_to_drive(filepath, filename)
-        
         return filepath
     except Exception as e:
         print(f"[SAIDAS] ❌ Erro ao salvar: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
 
 # ==============================================================================
