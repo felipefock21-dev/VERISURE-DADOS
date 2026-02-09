@@ -286,6 +286,9 @@ async function processarArquivo() {
             console.log('[UPLOAD] Upload iniciado com sucesso:', data);
             // Armazena o timestamp para buscar o resultado depois
             window.currentTaskTimestamp = data.timestamp;
+
+            // Inicia o polling do resultado como fallback ao SSE
+            setTimeout(() => buscarResultadoFinal(data.timestamp), 10000);
         } else {
             desconectarSSE();
             esconderProgressBar();
@@ -358,27 +361,41 @@ function conectarSSE() {
 }
 
 async function buscarResultadoFinal(timestamp) {
+    if (!timestamp) return;
+
+    // Se o resultado já foi preenchido (ex: via SSE), não faz nada
+    if (resultado && resultado.timestamp === timestamp) return;
+
     try {
         console.log(`[RESULTADO] Buscando resultado para ${timestamp}...`);
         const response = await fetch(`/resultado/${timestamp}`);
 
         if (response.ok) {
             const data = await response.json();
-            resultado = data;
-            atualizarProgressBar(100);
-            setTimeout(() => mostrarResultado(data), 500);
+
+            if (data.status === 'pendente') {
+                // Ainda processando, tenta de novo em 3 segundos
+                setTimeout(() => buscarResultadoFinal(timestamp), 3000);
+            } else {
+                console.log('[RESULTADO] Resultado obtido!', data);
+                resultado = data;
+                atualizarProgressBar(100);
+                setTimeout(() => mostrarResultado(data), 500);
+            }
         } else {
-            // Se ainda não estiver pronto, tenta de novo em 2 segundos
-            setTimeout(() => buscarResultadoFinal(timestamp), 2000);
+            // Se deu erro (ex: 404), pode ser que ainda não tenha sido criado o arquivo de resultado
+            setTimeout(() => buscarResultadoFinal(timestamp), 3000);
         }
     } catch (error) {
         console.error('[RESULTADO] Erro ao buscar:', error);
-        mostrarErro('Erro ao obter resultado final.');
+        // Tenta novamente em caso de erro de rede
+        setTimeout(() => buscarResultadoFinal(timestamp), 5000);
     }
 }
 
 function desconectarSSE() {
     if (eventSource) {
+        console.log('[SSE] Fechando conexão.');
         eventSource.close();
         eventSource = null;
     }
@@ -394,15 +411,9 @@ function mostrarProgressBar() {
     const progressText = document.getElementById('progressText');
 
     console.log('[PROGRESS] mostrarProgressBar() chamado');
-    console.log('[PROGRESS] progressContainer:', progressContainer);
-    console.log('[PROGRESS] progressFill:', progressFill);
-    console.log('[PROGRESS] progressText:', progressText);
 
     if (progressContainer) {
         progressContainer.style.display = 'block';
-        console.log('[PROGRESS] ✅ progressContainer display: block');
-    } else {
-        console.error('[PROGRESS] ❌ progressContainer não encontrado!');
     }
 
     if (progressFill) {
@@ -421,13 +432,13 @@ function atualizarProgressBar(percentual) {
     percentual = Math.min(percentual, 100);
     percentual = Math.max(percentual, 0);
 
-    progressFill.style.width = percentual + '%';
-    progressText.textContent = `Processando... ${Math.round(percentual)}%`;
+    if (progressFill) progressFill.style.width = percentual + '%';
+    if (progressText) progressText.textContent = `Processando... ${Math.round(percentual)}%`;
 }
 
 function esconderProgressBar() {
     const progressContainer = document.getElementById('progressContainer');
-    progressContainer.style.display = 'none';
+    if (progressContainer) progressContainer.style.display = 'none';
 }
 
 // =============================================================================
@@ -501,8 +512,6 @@ function abrirModalSucesso(mensagemTabela) {
 
             const cor = cores[mensagemTabela.cor] || '#2196F3';
 
-            console.log('[MODAL] Exibindo mensagem:', mensagemTabela);
-
             let detalhesHTML = '';
             if (mensagemTabela.detalhes) {
                 detalhesHTML = `<div style="font-size: 12px; margin-top: 8px; opacity: 0.9;">${mensagemTabela.detalhes}</div>`;
@@ -523,11 +532,7 @@ function abrirModalSucesso(mensagemTabela) {
                     ${detalhesHTML}
                 </div>
             `;
-        } else {
-            console.warn('[MODAL] Elemento mensagemTabela não encontrado');
         }
-    } else {
-        console.log('[MODAL] Nenhuma mensagem da tabela para exibir');
     }
 
     modal.style.display = 'flex';
@@ -538,10 +543,12 @@ function abrirModalSucesso(mensagemTabela) {
 
 function fecharModal() {
     const modal = document.getElementById('successModal');
-    modal.classList.remove('show');
-    setTimeout(() => {
-        modal.style.display = 'none';
-    }, 300);
+    if (modal) {
+        modal.classList.remove('show');
+        setTimeout(() => {
+            modal.style.display = 'none';
+        }, 300);
+    }
 }
 
 // =============================================================================
@@ -567,19 +574,26 @@ function mostrarResultado(data) {
         finalizarPasso(3);
 
         // Atualizar interface
-        document.getElementById('compiladoInfo').textContent = `${data.compilado.linhas} registros`;
+        const compiladoInfo = document.getElementById('compiladoInfo');
+        const mensalInfo = document.getElementById('mensalInfo');
+        const semanalInfo = document.getElementById('semanalInfo');
 
-        document.getElementById('mensalInfo').textContent = data.mensal.gerado
+        if (compiladoInfo) compiladoInfo.textContent = `${data.compilado.linhas} registros`;
+
+        if (mensalInfo) mensalInfo.textContent = data.mensal.gerado
             ? `${data.mensal.linhas} registros`
             : 'Não gerado';
 
-        document.getElementById('semanalInfo').textContent = data.semanal.gerado
+        if (semanalInfo) semanalInfo.textContent = data.semanal.gerado
             ? `${data.semanal.linhas} registros`
             : 'Não gerado';
 
         // Habilitar/desabilitar botões de download
-        document.getElementById('downloadMensalBtn').disabled = !data.mensal.gerado;
-        document.getElementById('downloadSemanalBtn').disabled = !data.semanal.gerado;
+        const downloadMensalBtn = document.getElementById('downloadMensalBtn');
+        const downloadSemanalBtn = document.getElementById('downloadSemanalBtn');
+
+        if (downloadMensalBtn) downloadMensalBtn.disabled = !data.mensal.gerado;
+        if (downloadSemanalBtn) downloadSemanalBtn.disabled = !data.semanal.gerado;
 
         // Mostrar seção de resultado
         progressSection.style.display = 'none';
@@ -601,7 +615,8 @@ function mostrarErro(mensagem) {
     resultSection.style.display = 'none';
     errorSection.style.display = 'block';
 
-    document.getElementById('errorMessage').textContent = mensagem;
+    const errorMessage = document.getElementById('errorMessage');
+    if (errorMessage) errorMessage.textContent = mensagem;
 }
 
 // =============================================================================
@@ -666,9 +681,3 @@ function resetarFormulario() {
         }
     });
 }
-
-// =============================================================================
-// INICIALIZAÇÃO
-// =============================================================================
-
-console.log('🚀 VERISURE Compilador de Relatórios - Pronto!');

@@ -1030,11 +1030,6 @@ def passo1_compilar(arquivo_path):
     print(f"\n[PASSO 1] 🚀 Iniciando compilação...")
     print(f"[PASSO 1] 📄 Arquivo principal: {arquivo_path}")
     
-    # 🧪 SIMULAÇÃO DE CARGA PARA TESTE (65 segundos - supera o timeout de 60s do Railway)
-    # print("[TESTE] ⏳ Simulando processamento longo de 65 segundos...")
-    # import time
-    # time.sleep(65)
-    
     try:
         all_dataframes = []
         
