@@ -2159,6 +2159,11 @@ def upload_file():
         print(f"[UPLOAD] 💾 Arquivo salvo em: {filepath}")
         atualizar_progresso(1, 5, "Arquivo recebido...")
 
+        # Inicializa cache de resultado como pendente
+        if not hasattr(app, 'resultados_cache'):
+            app.resultados_cache = {}
+        app.resultados_cache[timestamp_task] = {'status': 'pendente', 'mensagem': 'Processamento em fila...'}
+
         # Inicia processamento em thread separada
         thread = threading.Thread(target=processar_em_background, args=(filepath, timestamp_task))
         thread.daemon = True
@@ -2178,6 +2183,9 @@ def upload_file():
 def processar_em_background(filepath, timestamp_task):
     """Lógica de processamento que roda em segundo plano"""
     try:
+        # Marca como processando no cache
+        app.resultados_cache[timestamp_task] = {'status': 'pendente', 'mensagem': 'Iniciando compilação...'}
+        
         # PASSO 1: Compilação
         print(f"[BG-TASK] 🔄 Iniciando PASSO 1 para {timestamp_task}...")
         atualizar_progresso(1, 10, "Compilando dados...")
@@ -2186,8 +2194,10 @@ def processar_em_background(filepath, timestamp_task):
         if erro or df_compilado is None:
             print(f"[BG-TASK] ❌ PASSO 1 falhou: {erro}")
             atualizar_progresso(0, 0, f"Erro: {erro}")
+            app.resultados_cache[timestamp_task] = {'sucesso': False, 'erro': f'Erro no Passo 1: {erro}'}
             return
 
+        app.resultados_cache[timestamp_task] = {'status': 'pendente', 'mensagem': 'Gerando relatórios...'}
         atualizar_progresso(1, 40, f"Passo 1 completo: {len(df_compilado)} registros")
         
         # PASSO 2: Relatório Mensal
@@ -2248,8 +2258,6 @@ def processar_em_background(filepath, timestamp_task):
             json.dump(resultado_final, f, ensure_ascii=False, indent=4)
         
         # Cache em memória para acesso rápido no mesmo processo
-        if not hasattr(app, 'resultados_cache'):
-            app.resultados_cache = {}
         app.resultados_cache[timestamp_task] = resultado_final
         
         # Salva DataFrames globais (usados no /download)
@@ -2265,6 +2273,8 @@ def processar_em_background(filepath, timestamp_task):
         print(f"[BG-TASK] ❌ Erro no processamento background: {str(e)}")
         print(traceback.format_exc())
         atualizar_progresso(0, 0, f"Erro fatal: {str(e)}")
+        if hasattr(app, 'resultados_cache'):
+            app.resultados_cache[timestamp_task] = {'sucesso': False, 'erro': str(e)}
     finally:
         # Limpa arquivo temporário
         if filepath and os.path.exists(filepath):
@@ -2277,12 +2287,12 @@ def processar_em_background(filepath, timestamp_task):
 
 @app.route('/resultado/<timestamp>')
 def obter_resultado(timestamp):
-    """Busca o resultado do processamento finalizado"""
-    # Tenta cache em memória primeiro
+    """Busca o resultado do processamento finalizado ou status pendente"""
+    # Tenta cache em memória primeiro (mais rápido e pega status pendente/erro)
     if hasattr(app, 'resultados_cache') and timestamp in app.resultados_cache:
         return jsonify(app.resultados_cache[timestamp])
     
-    # Tenta carregar do disco
+    # Tenta carregar do disco (backup para persistência entre restarts)
     resultado_path = os.path.join(app.config['SAIDAS_FOLDER'], f"resultado_{timestamp}.json")
     if os.path.exists(resultado_path):
         try:
@@ -2292,7 +2302,7 @@ def obter_resultado(timestamp):
         except Exception as e:
             return jsonify({'erro': f'Erro ao ler resultado: {str(e)}'}), 500
             
-    return jsonify({'status': 'pendente'}), 404
+    return jsonify({'status': 'pendente', 'timestamp': timestamp}), 200
 
 @app.route('/download/<tipo>')
 def download(tipo):

@@ -376,6 +376,12 @@ async function buscarResultadoFinal(timestamp) {
             if (data.status === 'pendente') {
                 // Ainda processando, tenta de novo em 3 segundos
                 setTimeout(() => buscarResultadoFinal(timestamp), 3000);
+            } else if (data.sucesso === false) {
+                // Ocorreu um erro no processamento em background
+                console.error('[RESULTADO] Erro no processamento:', data.erro);
+                desconectarSSE();
+                esconderProgressBar();
+                mostrarErro(data.erro || 'Erro no processamento em segundo plano');
             } else {
                 console.log('[RESULTADO] Resultado obtido!', data);
                 resultado = data;
@@ -383,7 +389,7 @@ async function buscarResultadoFinal(timestamp) {
                 setTimeout(() => mostrarResultado(data), 500);
             }
         } else {
-            // Se deu erro (ex: 404), pode ser que ainda não tenha sido criado o arquivo de resultado
+            // Se deu erro (ex: 500), tenta de novo por precaução se ainda estiver no tempo razoável
             setTimeout(() => buscarResultadoFinal(timestamp), 3000);
         }
     } catch (error) {
