@@ -1062,6 +1062,7 @@ def passo1_compilar(arquivo_path):
             print("[PASSO 1] ℹ️ Acesse /authorize para fazer login")
         else:
             # Lista todos os Google Sheets da pasta RelatorioVeri
+            atualizar_progresso(1, 20, "Buscando planilhas no Google Drive...")
             sheets_list = list_google_sheets_in_drive(drive_service, "RelatorioVeri")
             
             dados_identificador_info = None
@@ -1094,8 +1095,10 @@ def passo1_compilar(arquivo_path):
                 sheet_name = sheet_info['name']
                 sheet_id = sheet_info['id']
                 
-                print(f"\n[PASSO 1]    [{i}/{len(report_sheets)}] Processando: {sheet_name}")
-                
+                # Calcula percentual progressivo (de 20% a 35%)
+                perc = 20 + int((i / len(report_sheets)) * 15)
+                atualizar_progresso(1, perc, f"Lendo do Drive: {sheet_name}")
+
                 # Lê o arquivo
                 df = read_google_sheet(sheets_service, sheet_id, sheet_name)
                 
@@ -1134,6 +1137,7 @@ def passo1_compilar(arquivo_path):
                     print(f"[PASSO 1]       ❌ Erro na leitura")
         
         # ========== ETAPA 3: Unificar todos os dados ==========
+        atualizar_progresso(1, 36, "Unificando dados e removendo duplicatas...")
         print(f"\n[PASSO 1] 🔗 ETAPA 3: Unificando {len(all_dataframes)} fonte(s) de dados...")
         
         if not all_dataframes:
