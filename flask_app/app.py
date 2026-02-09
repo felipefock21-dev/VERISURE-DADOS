@@ -703,7 +703,19 @@ def save_to_saidas(df, filename, apply_formatting=False):
         # Preparar colunas para exportação (sem fazer cópia completa)
         cols_to_export = [col for col in df.columns if not str(col).startswith('Unnamed')]
         
-        # Salvar Excel normalmente
+        # Para arquivos muito grandes (>30k linhas), usar CSV para evitar timeout/crash
+        # Excel é muito lento para datasets grandes no Railway
+        if len(df) > 30000:
+            print(f"[SAIDAS] ⚠️ Arquivo grande ({len(df)} linhas), usando CSV para evitar timeout...")
+            csv_filepath = filepath.replace('.xlsx', '.csv')
+            df[cols_to_export].to_csv(csv_filepath, index=False, encoding='utf-8-sig')
+            elapsed = time.time() - start_time
+            print(f"[SAIDAS] ✅ Arquivo CSV salvo: {csv_filepath}")
+            print(f"[SAIDAS] ⏱️ Tempo de salvamento: {elapsed:.2f}s")
+            gc.collect()
+            return csv_filepath
+        
+        # Salvar Excel normalmente para arquivos menores
         print(f"[SAIDAS] 💾 Iniciando escrita Excel...")
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
             df[cols_to_export].to_excel(writer, index=False, sheet_name='Dados')
@@ -729,7 +741,7 @@ def save_to_saidas(df, filename, apply_formatting=False):
         import traceback
         traceback.print_exc()
         
-        # Fallback: tentar salvar como CSV SOMENTE se Excel falhar
+        # Fallback: tentar salvar como CSV se Excel falhar
         try:
             print(f"[SAIDAS] 🔄 Excel falhou, tentando fallback para CSV...")
             csv_filepath = filepath.replace('.xlsx', '.csv')
