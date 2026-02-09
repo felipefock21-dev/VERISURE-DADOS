@@ -25,6 +25,8 @@ from copy import copy
 from openpyxl.utils import get_column_letter
 import tempfile
 import sys
+import gc
+import psutil
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 # Adicionar pasta raiz ao path para importar oauth_manager
@@ -977,49 +979,54 @@ def calculate_mes_comercial(df):
     return df
 
 def remove_duplicates_properly(df):
-    """Remove duplicatas baseado em Identificador, Data, Hora, Semana, Ano Comercial e Mês Comercial"""
-    if df.empty:
+    """Remove duplicatas de forma eficiente em termos de memória"""
+    if df is None or df.empty:
         return df, 0
 
     original_count = len(df)
-
+    
     required_cols = ['Identificador', 'Data', 'Hora']
     if not all(col in df.columns for col in required_cols):
         return df, 0
 
-    df_clean = df.copy()
-
-    df_clean['Identificador_clean'] = df_clean['Identificador'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
-    df_clean['Data_clean'] = df_clean['Data'].astype(str).str.strip().str.replace(' ', '').str.upper().replace('', 'VAZIO')
-    df_clean['Hora_clean'] = df_clean['Hora'].astype(str).str.strip().str.replace(' ', '')
-    df_clean['Hora_clean'] = df_clean['Hora_clean'].str.replace(r'\.\d+$', '', regex=True)
-    df_clean['Hora_clean'] = df_clean['Hora_clean'].apply(lambda x:
-        x if len(str(x).split(':')) == 3 else (str(x) + ':00' if len(str(x).split(':')) == 2 else 'VAZIO'))
-    df_clean['Hora_clean'] = df_clean['Hora_clean'].str.upper().replace('', 'VAZIO')
-
-    # Adiciona limpeza para Semana, Ano Comercial e Mês Comercial se existirem
-    duplicate_cols = ['Identificador_clean', 'Data_clean', 'Hora_clean']
+    # Usamos colunas temporárias diretamente no DataFrame original para evitar df.copy()
+    temp_cols = []
     
-    if 'Semana' in df_clean.columns:
-        df_clean['Semana_clean'] = df_clean['Semana'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
-        duplicate_cols.append('Semana_clean')
+    # 1. Identificador
+    df['Identificador_tmp'] = df['Identificador'].astype(str).str.strip().str.upper().replace(['', 'nan', 'None'], 'VAZIO')
+    temp_cols.append('Identificador_tmp')
     
-    if 'Ano Comercial' in df_clean.columns:
-        df_clean['AnoComercial_clean'] = df_clean['Ano Comercial'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
-        duplicate_cols.append('AnoComercial_clean')
+    # 2. Data
+    if pd.api.types.is_datetime64_any_dtype(df['Data']):
+        temp_cols.append('Data')
+    else:
+        df['Data_tmp'] = df['Data'].astype(str).str.strip().str.replace(' ', '').str.upper().replace(['', 'nan', 'None'], 'VAZIO')
+        temp_cols.append('Data_tmp')
+        
+    # 3. Hora
+    df['Hora_tmp'] = df['Hora'].astype(str).str.strip().str.replace(' ', '').str.upper()
+    df['Hora_tmp'] = df['Hora_tmp'].str.replace(r'\.\d+$', '', regex=True)
+    # Normalização básica de hora
+    df['Hora_tmp'] = df['Hora_tmp'].apply(lambda x: 
+        x if ':' in str(x) else ('VAZIO' if x in ['', 'nan', 'None'] else x))
+    temp_cols.append('Hora_tmp')
     
-    if 'Mês Comercial' in df_clean.columns:
-        df_clean['MesComercial_clean'] = df_clean['Mês Comercial'].astype(str).str.strip().str.upper().replace('', 'VAZIO')
-        duplicate_cols.append('MesComercial_clean')
+    # 4. Colunas opcionais
+    for col in ['Semana', 'Ano Comercial', 'Mês Comercial']:
+        if col in df.columns:
+            tmp_name = f"{col}_tmp"
+            df[tmp_name] = df[col].astype(str).str.strip().str.upper().replace(['', 'nan', 'None'], 'VAZIO')
+            temp_cols.append(tmp_name)
 
-    df_no_duplicates = df_clean.drop_duplicates(subset=duplicate_cols, keep='first')
-
-    cols_to_drop = [col for col in df_no_duplicates.columns if col.endswith('_clean')]
-    df_no_duplicates = df_no_duplicates.drop(columns=cols_to_drop)
-
-    duplicates_removed = original_count - len(df_no_duplicates)
-
-    return df_no_duplicates, duplicates_removed
+    # Remove duplicatas IN-PLACE
+    df.drop_duplicates(subset=temp_cols, keep='first', inplace=True)
+    
+    # Limpa temporárias
+    cols_to_remove = [c for c in temp_cols if c.endswith('_tmp')]
+    df.drop(columns=cols_to_remove, inplace=True)
+    
+    duplicates_removed = original_count - len(df)
+    return df, duplicates_removed
 
 # ==============================================================================
 # PASSO 1: COMPILADOR
@@ -1159,7 +1166,7 @@ def passo1_compilar(arquivo_path):
                     continue
         
         # ========== ETAPA 3: Unificar todos os dados ==========
-        atualizar_progresso(1, 36, "Unificando dados e removendo duplicatas...")
+        atualizar_progresso(1, 36, "Unificando arquivos do Drive...")
         print(f"\n[PASSO 1] 🔗 ETAPA 3: Unificando {len(all_dataframes)} fonte(s) de dados...")
         
         if not all_dataframes:
@@ -1167,11 +1174,19 @@ def passo1_compilar(arquivo_path):
         
         # Concatena todos os DataFrames
         unified_df = pd.concat(all_dataframes, ignore_index=True)
-        print(f"[PASSO 1]    Total unificado: {len(unified_df)} registros")
+        
+        # Libera memória imediatamente
+        del all_dataframes
+        gc.collect()
+        
+        atualizar_progresso(1, 37, "Removendo duplicatas entre arquivos...")
+        print(f"[PASSO 1]    Total unificado: {len(unified_df)} registros. Limpando duplicatas...")
         
         # Remove duplicatas do conjunto unificado
         unified_df, dup_removed = remove_duplicates_properly(unified_df)
         print(f"[PASSO 1]    Após remoção de duplicatas: {len(unified_df)} registros")
+        
+        gc.collect() # Mais uma coleta após limpeza pesada
         
         # ========== ETAPA 4: Fazer MERGE com DadosIdentificador ==========
         print(f"\n[PASSO 1] 🔗 ETAPA 4: Fazendo merge com DadosIdentificador...")
@@ -1191,6 +1206,10 @@ def passo1_compilar(arquivo_path):
             # Realiza o merge
             unified_df = unified_df.merge(df_dados_id, on='Identificador', how='left')
             print(f"[PASSO 1]    ✅ Merge realizado: {len(unified_df)} registros")
+            
+            # Libera DadosIdentificador após merge
+            del df_dados_id
+            gc.collect()
             
             # Converte 'porc' para numérico se existir
             if 'porc' in unified_df.columns:
@@ -1237,10 +1256,14 @@ def passo1_compilar(arquivo_path):
         print(f"[PASSO 1] 📊 Colunas: {list(unified_df.columns)}")
         
         # SALVA NA PASTA SAIDAS (SEM FORMATAÇÃO)
+        print(f"[PASSO 1] 💾 Salvando arquivo na pasta saidas...")
+        atualizar_progresso(1, 39, "Salvando arquivo compilado...")
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"COMPILADO_{timestamp}.xlsx"
         save_to_saidas(unified_df, filename, apply_formatting=False)
         
+        atualizar_progresso(1, 40, "Passo 1 concluído!")
         return unified_df, None, timestamp
     
     except Exception as e:
