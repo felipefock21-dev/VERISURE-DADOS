@@ -38,22 +38,33 @@ from oauth_config import DRIVE_FOLDER_ID, TOKEN_FILE
 
 warnings.filterwarnings('ignore')
 
-# ===== ARMAZENAMENTO DE PROGRESSO (para SSE) =====
-upload_progress = {
-    'etapa': 0,  # 0=nenhuma, 1=passo1, 2=passo2, 3=passo3, 4=completo
-    'percentual': 0,
-    'mensagem': 'Aguardando arquivo...'
-}
+# ===== ARMAZENAMENTO DE PROGRESSO (para SSE - Baseado em Arquivo) =====
+PROGRESS_FILE = 'upload_progress.json'
 
 def atualizar_progresso(etapa, percentual, mensagem):
-    """Atualiza o progresso global"""
-    global upload_progress
-    upload_progress = {
+    """Atualiza o progresso em um arquivo compartilhado entre processos"""
+    progress = {
         'etapa': etapa,
         'percentual': min(percentual, 100),
-        'mensagem': mensagem
+        'mensagem': mensagem,
+        'timestamp': time.time()
     }
+    try:
+        with open(PROGRESS_FILE, 'w') as f:
+            json.dump(progress, f)
+    except Exception as e:
+        print(f"[PROGRESSO] Erro ao gravar: {e}")
     print(f"[PROGRESSO] {percentual}% - {mensagem}")
+
+def ler_progresso():
+    """Lê o progresso do arquivo compartilhado"""
+    if not os.path.exists(PROGRESS_FILE):
+        return {'etapa': 0, 'percentual': 0, 'mensagem': 'Aguardando arquivo...'}
+    try:
+        with open(PROGRESS_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {'etapa': 0, 'percentual': 0, 'mensagem': 'Erro ao ler progresso...'}
 
 # Verificar se OAuth está configurado
 OAUTH_CONFIGURED = os.path.exists(TOKEN_FILE)
@@ -142,11 +153,22 @@ def oauth2callback():
 
 @app.route('/progresso')
 def progresso_sse():
-    """Server-Sent Events para enviar progresso em tempo real"""
+    """Server-Sent Events para enviar progresso em tempo real (lendo do arquivo)"""
     def gerar_progresso():
+        ultimo_percentual = -1
         while True:
-            yield f"data: {json.dumps(upload_progress)}\n\n"
-            time.sleep(0.5)  # Atualiza a cada 500ms
+            progress = ler_progresso()
+            # Só envia se houver mudança significativa ou for novo
+            if progress.get('percentual') != ultimo_percentual:
+                yield f"data: {json.dumps(progress)}\n\n"
+                ultimo_percentual = progress.get('percentual')
+            
+            # Se terminou, mantém um pouco mais e para
+            if progress.get('etapa') == 4:
+                time.sleep(2)
+                break
+                
+            time.sleep(0.8)
     
     return Response(gerar_progresso(), mimetype='text/event-stream')
 
