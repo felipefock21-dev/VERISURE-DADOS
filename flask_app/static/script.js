@@ -274,7 +274,7 @@ async function processarArquivo() {
         const formData = new FormData();
         formData.append('file', file);
 
-        // Enviar para servidor com tracking de progresso
+        // Enviar para servidor - Retorna rápido agora (202 Accepted)
         const response = await fetch('/upload', {
             method: 'POST',
             body: formData
@@ -283,10 +283,9 @@ async function processarArquivo() {
         const data = await response.json();
 
         if (response.ok) {
-            resultado = data;
-            atualizarProgressBar(100);
-            desconectarSSE();
-            setTimeout(() => mostrarResultado(data), 500);
+            console.log('[UPLOAD] Upload iniciado com sucesso:', data);
+            // Armazena o timestamp para buscar o resultado depois
+            window.currentTaskTimestamp = data.timestamp;
         } else {
             desconectarSSE();
             esconderProgressBar();
@@ -316,6 +315,15 @@ function conectarSSE() {
             if (data.etapa > 0 && data.etapa <= 3) {
                 ativarPasso(data.etapa);
             }
+
+            // SE CHEGOU NO 100% (ETAPA 4), busca o resultado final
+            if (data.etapa === 4 || data.percentual >= 100) {
+                console.log('[SSE] Processamento concluído! Buscando resultado...');
+                desconectarSSE();
+                if (window.currentTaskTimestamp) {
+                    buscarResultadoFinal(window.currentTaskTimestamp);
+                }
+            }
         } catch (error) {
             console.error('[SSE] Erro ao processar:', error);
         }
@@ -323,9 +331,28 @@ function conectarSSE() {
 
     eventSource.onerror = function (error) {
         console.log('[SSE] Conexão finalizada');
-        // Desconectar automaticamente ao erro
         desconectarSSE();
     };
+}
+
+async function buscarResultadoFinal(timestamp) {
+    try {
+        console.log(`[RESULTADO] Buscando resultado para ${timestamp}...`);
+        const response = await fetch(`/resultado/${timestamp}`);
+
+        if (response.ok) {
+            const data = await response.json();
+            resultado = data;
+            atualizarProgressBar(100);
+            setTimeout(() => mostrarResultado(data), 500);
+        } else {
+            // Se ainda não estiver pronto, tenta de novo em 2 segundos
+            setTimeout(() => buscarResultadoFinal(timestamp), 2000);
+        }
+    } catch (error) {
+        console.error('[RESULTADO] Erro ao buscar:', error);
+        mostrarErro('Erro ao obter resultado final.');
+    }
 }
 
 function desconectarSSE() {

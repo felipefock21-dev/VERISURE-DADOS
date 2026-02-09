@@ -17,6 +17,7 @@ import io
 import time
 import gspread
 import json
+import threading
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from openpyxl import load_workbook
@@ -1017,6 +1018,11 @@ def passo1_compilar(arquivo_path):
     """Passo 1: Compila o arquivo raw + MÚLTIPLAS PLANILHAS DO DRIVE (como o Colab)"""
     print(f"\n[PASSO 1] 🚀 Iniciando compilação...")
     print(f"[PASSO 1] 📄 Arquivo principal: {arquivo_path}")
+    
+    # 🧪 SIMULAÇÃO DE CARGA PARA TESTE (65 segundos - supera o timeout de 60s do Railway)
+    # print("[TESTE] ⏳ Simulando processamento longo de 65 segundos...")
+    # import time
+    # time.sleep(65)
     
     try:
         all_dataframes = []
@@ -2121,7 +2127,7 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """Recebe arquivo e processa os 3 passos"""
+    """Recebe arquivo e inicia processamento em segundo plano"""
     filepath = None
     try:
         print("[UPLOAD] 🚀 Iniciando upload...")
@@ -2141,181 +2147,184 @@ def upload_file():
         
         # Salva arquivo temporário
         filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{datetime.now().timestamp()}_{filename}")
+        timestamp_task = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{timestamp_task}_{filename}")
         file.save(filepath)
         print(f"[UPLOAD] 💾 Arquivo salvo em: {filepath}")
         atualizar_progresso(1, 5, "Arquivo recebido...")
-        
+
+        # Inicia processamento em thread separada
+        thread = threading.Thread(target=processar_em_background, args=(filepath, timestamp_task))
+        thread.daemon = True
+        thread.start()
+
+        return jsonify({
+            'sucesso': True, 
+            'status': 'processando', 
+            'timestamp': timestamp_task,
+            'mensagem': 'Processamento iniciado em segundo plano.'
+        }), 202
+
+    except Exception as e:
+        print(f"[UPLOAD] ❌ Erro ao iniciar upload: {str(e)}")
+        return jsonify({'erro': f'Erro ao iniciar upload: {str(e)}'}), 500
+
+def processar_em_background(filepath, timestamp_task):
+    """Lógica de processamento que roda em segundo plano"""
+    try:
         # PASSO 1: Compilação
-        print("[UPLOAD] 🔄 Iniciando PASSO 1...")
+        print(f"[BG-TASK] 🔄 Iniciando PASSO 1 para {timestamp_task}...")
         atualizar_progresso(1, 10, "Compilando dados...")
-        df_compilado, erro, timestamp = passo1_compilar(filepath)  # NOVO: Captura timestamp
-        atualizar_progresso(1, 40, f"Passo 1 completo: {len(df_compilado) if df_compilado is not None else 0} registros")
-        print(f"[UPLOAD] PASSO 1 resultado - Erro: {erro}, Linhas: {len(df_compilado) if df_compilado is not None else 0}")
+        df_compilado, erro, timestamp_gen = passo1_compilar(filepath)
         
         if erro or df_compilado is None:
-            print(f"[UPLOAD] ❌ PASSO 1 falhou: {erro}")
-            atualizar_progresso(0, 0, "Erro no processamento")
-            return jsonify({'erro': f'Passo 1 falhou: {erro}'}), 400
+            print(f"[BG-TASK] ❌ PASSO 1 falhou: {erro}")
+            atualizar_progresso(0, 0, f"Erro: {erro}")
+            return
+
+        atualizar_progresso(1, 40, f"Passo 1 completo: {len(df_compilado)} registros")
         
-        # PASSO 2: Relatório Mensal (passa o compilado da memória para ser rápido)
-        print("[UPLOAD] 🔄 Iniciando PASSO 2...")
+        # PASSO 2: Relatório Mensal
+        print("[BG-TASK] 🔄 Iniciando PASSO 2...")
         atualizar_progresso(2, 45, "Gerando relatório mensal...")
         df_mensal, erro = passo2_mensal(df_compilado)
-        atualizar_progresso(2, 70, f"Passo 2 completo: {len(df_mensal) if df_mensal is not None else 0} registros")
-        print(f"[UPLOAD] PASSO 2 resultado - Erro: {erro}, Linhas: {len(df_mensal) if df_mensal is not None else 0}")
         if erro:
-            print(f"Aviso Passo 2: {erro}")
+            print(f"[BG-TASK] Aviso Passo 2: {erro}")
             df_mensal = None
+        atualizar_progresso(2, 70, f"Passo 2 completo: {len(df_mensal) if df_mensal is not None else 0} registros")
         
-        # PASSO 3: Relatório Semanal (SEM passar df_compilado - deixa buscar da pasta)
-        print("[UPLOAD] 🔄 Iniciando PASSO 3...")
+        # PASSO 3: Relatório Semanal
+        print("[BG-TASK] 🔄 Iniciando PASSO 3...")
         atualizar_progresso(3, 75, "Gerando relatório semanal...")
         df_semanal, erro = passo3_semanal()
-        atualizar_progresso(3, 85, f"Passo 3 completo: {len(df_semanal) if df_semanal is not None else 0} registros")
-        print(f"[UPLOAD] PASSO 3 resultado - Erro: {erro}, Linhas: {len(df_semanal) if df_semanal is not None else 0}")
         if erro:
-            print(f"Aviso Passo 3: {erro}")
+            print(f"[BG-TASK] Aviso Passo 3: {erro}")
             df_semanal = None
+        atualizar_progresso(3, 85, f"Passo 3 completo: {len(df_semanal) if df_semanal is not None else 0} registros")
         
-        print("[UPLOAD] ✅ Todos os passos concluídos")
-        atualizar_progresso(3, 90, "Finalizando...")
-        
-        # 🚀 NOVO: Atualiza planilha SEMANAL oficial com as novas semanas
+        # Atualiza planilha SEMANAL oficial
         atualizar_resultado = None
         mensagem_tabela = None
         
-        print(f"[UPLOAD] df_semanal: {df_semanal is not None}, empty: {df_semanal.empty if df_semanal is not None else 'N/A'}")
-        
         if df_semanal is not None and not df_semanal.empty:
             atualizar_resultado = atualizar_semanal_oficial(df_semanal)
-            print(f"[UPLOAD] Atualização semanal oficial: {atualizar_resultado}")
-            
-            # Cria mensagem baseado no resultado
             if atualizar_resultado and isinstance(atualizar_resultado, dict):
                 if atualizar_resultado.get('status') == 'sucesso':
-                    num_linhas = atualizar_resultado.get('total_linhas', 0)
-                    mensagem_tabela = {
-                        'tipo': 'sucesso',
-                        'cor': 'verde',
-                        'mensagem': f'✅ Novas linhas adicionadas na tabela',
-                        'detalhes': atualizar_resultado.get('mensagem', '')
-                    }
+                    mensagem_tabela = {'tipo': 'sucesso', 'cor': 'verde', 'mensagem': '✅ Novas linhas adicionadas na tabela', 'detalhes': atualizar_resultado.get('mensagem', '')}
                 elif atualizar_resultado.get('status') == 'info':
-                    mensagem_tabela = {
-                        'tipo': 'info',
-                        'cor': 'azul',
-                        'mensagem': 'ℹ️ Tabela já está atualizada com os últimos dados',
-                        'detalhes': atualizar_resultado.get('mensagem', '')
-                    }
+                    mensagem_tabela = {'tipo': 'info', 'cor': 'azul', 'mensagem': 'ℹ️ Tabela já está atualizada', 'detalhes': atualizar_resultado.get('mensagem', '')}
                 else:
-                    mensagem_tabela = {
-                        'tipo': 'aviso',
-                        'cor': 'laranja',
-                        'mensagem': '⚠️ Ocorreu um aviso ao atualizar a tabela',
-                        'detalhes': atualizar_resultado.get('mensagem', '')
-                    }
+                    mensagem_tabela = {'tipo': 'aviso', 'cor': 'laranja', 'mensagem': '⚠️ Aviso ao atualizar tabela', 'detalhes': atualizar_resultado.get('mensagem', '')}
             else:
-                mensagem_tabela = {
-                    'tipo': 'erro',
-                    'cor': 'vermelho',
-                    'mensagem': '❌ Erro ao atualizar a tabela oficial',
-                    'detalhes': str(atualizar_resultado)
-                }
+                mensagem_tabela = {'tipo': 'erro', 'cor': 'vermelho', 'mensagem': '❌ Erro ao atualizar tabela oficial', 'detalhes': str(atualizar_resultado)}
         else:
-            mensagem_tabela = {
-                'tipo': 'info',
-                'cor': 'cinza',
-                'mensagem': 'ℹ️ Relatório semanal não foi gerado',
-                'detalhes': 'Verifique os dados de entrada'
-            }
-        
-        # Prepara resultado
-        # timestamp já vem de passo1_compilar()
-        
-        resultado = {
+            mensagem_tabela = {'tipo': 'info', 'cor': 'cinza', 'mensagem': 'ℹ️ Relatório semanal não foi gerado', 'detalhes': 'Capas de rádio não encontradas'}
+
+        # Prepara resultado final
+        resultado_final = {
             'sucesso': True,
-            'timestamp': timestamp,
-            'compilado': {
-                'linhas': len(df_compilado),
-                'colunas': list(df_compilado.columns)
-            },
-            'mensal': {
-                'linhas': len(df_mensal) if df_mensal is not None else 0,
-                'gerado': df_mensal is not None
-            },
-            'semanal': {
-                'linhas': len(df_semanal) if df_semanal is not None else 0,
-                'gerado': df_semanal is not None
-            },
+            'timestamp': timestamp_gen,
+            'compilado': {'linhas': len(df_compilado), 'colunas': list(df_compilado.columns)},
+            'mensal': {'linhas': len(df_mensal) if df_mensal is not None else 0, 'gerado': df_mensal is not None},
+            'semanal': {'linhas': len(df_semanal) if df_semanal is not None else 0, 'gerado': df_semanal is not None},
             'semanal_oficial_atualizado': atualizar_resultado,
             'mensagem_tabela': mensagem_tabela
         }
+
+        # Upload para Google Drive
+        upload_results = upload_all_reports_to_drive(timestamp_gen)
+        if upload_results:
+            resultado_final['google_drive_upload'] = upload_results
         
-        # Salva em sessão para download
+        # Salva o resultado em disco para o frontend buscar
+        resultado_path = os.path.join(app.config['SAIDAS_FOLDER'], f"resultado_{timestamp_task}.json")
+        with open(resultado_path, 'w', encoding='utf-8') as f:
+            json.dump(resultado_final, f, ensure_ascii=False, indent=4)
+        
+        # Cache em memória para acesso rápido no mesmo processo
+        if not hasattr(app, 'resultados_cache'):
+            app.resultados_cache = {}
+        app.resultados_cache[timestamp_task] = resultado_final
+        
+        # Salva DataFrames globais (usados no /download)
         app.df_compilado = df_compilado
         app.df_mensal = df_mensal
         app.df_semanal = df_semanal
         
-        # 🚀 NOVO: Faz upload automático dos 3 arquivos para Google Drive (pasta compartilhada)
-        upload_results = upload_all_reports_to_drive(timestamp)
-        if upload_results:
-            resultado['google_drive_upload'] = upload_results
-        
-        resultado['info'] = '✅ Arquivos processados, salvos em saidas/ e enviados para Google Drive!'
-        
-        return jsonify(resultado), 200
-    
+        print(f"[BG-TASK] ✅ Processamento {timestamp_task} concluído com sucesso!")
+        atualizar_progresso(4, 100, "Concluído!")
+
     except Exception as e:
         import traceback
-        error_msg = str(e)
-        tb_str = traceback.format_exc()
-        print(f"[UPLOAD] ❌ Erro geral: {error_msg}")
-        print(f"[UPLOAD] Traceback:\n{tb_str}")
-        return jsonify({'erro': f'Erro geral: {error_msg}'}), 500
-    
+        print(f"[BG-TASK] ❌ Erro no processamento background: {str(e)}")
+        print(traceback.format_exc())
+        atualizar_progresso(0, 0, f"Erro fatal: {str(e)}")
     finally:
-        # Limpa arquivo temporário (com tratamento de erro)
+        # Limpa arquivo temporário
         if filepath and os.path.exists(filepath):
             try:
-                import time
-                time.sleep(0.5)  # Pequena pausa para garantir que o arquivo foi liberado
+                time.sleep(1)
                 os.remove(filepath)
-                print(f"[UPLOAD] Arquivo temporário removido: {filepath}")
+                print(f"[BG-TASK] Arquivo temporário removido: {filepath}")
             except Exception as e:
-                print(f"[UPLOAD] ⚠️ Não foi possível deletar {filepath}: {str(e)}")
+                print(f"[BG-TASK] ⚠️ Erro ao remover temp: {str(e)}")
+
+@app.route('/resultado/<timestamp>')
+def obter_resultado(timestamp):
+    """Busca o resultado do processamento finalizado"""
+    # Tenta cache em memória primeiro
+    if hasattr(app, 'resultados_cache') and timestamp in app.resultados_cache:
+        return jsonify(app.resultados_cache[timestamp])
+    
+    # Tenta carregar do disco
+    resultado_path = os.path.join(app.config['SAIDAS_FOLDER'], f"resultado_{timestamp}.json")
+    if os.path.exists(resultado_path):
+        try:
+            with open(resultado_path, 'r', encoding='utf-8') as f:
+                res = json.load(f)
+                return jsonify(res)
+        except Exception as e:
+            return jsonify({'erro': f'Erro ao ler resultado: {str(e)}'}), 500
+            
+    return jsonify({'status': 'pendente'}), 404
 
 @app.route('/download/<tipo>')
 def download(tipo):
-    """Faz download dos arquivos gerados"""
+    """Faz download dos arquivos gerados (lê dos DataFrames em memória ou disco)"""
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        if tipo == 'compilado':
+        # Pega o arquivo compilado mais recente ou específico
+        # Aqui simplificamos usando o que está em memória se existir
+        df = None
+        if tipo == 'compilado' and hasattr(app, 'df_compilado'):
             df = app.df_compilado
-            filename = f'COMPILADO_{timestamp}.xlsx'
-        elif tipo == 'mensal':
+        elif tipo == 'mensal' and hasattr(app, 'df_mensal'):
             df = app.df_mensal
-            filename = f'RELATORIO_MENSAL_{timestamp}.xlsx'
-        elif tipo == 'semanal':
+        elif tipo == 'semanal' and hasattr(app, 'df_semanal'):
             df = app.df_semanal
-            filename = f'RELATORIO_SEMANAL_{timestamp}.xlsx'
-        else:
-            return jsonify({'erro': 'Tipo inválido'}), 400
         
-        if df is None or df.empty:
-            return jsonify({'erro': 'Arquivo não disponível'}), 404
+        if df is not None:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            output.seek(0)
+            
+            filename = f"RELATORIO_{tipo.upper()}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            return send_file(output, as_attachment=True, download_name=filename)
         
-        # Cria arquivo em memória
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Dados')
+        # Se não estiver em memória, tenta buscar o mais recente do disco
+        filepath = None
+        if tipo == 'compilado':
+            filepath = get_latest_compiled_file()
+        elif tipo == 'semanal':
+            filepath = get_latest_semanal_file()
         
-        output.seek(0)
-        return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=filename)
-    
+        if filepath and os.path.exists(filepath):
+            return send_file(filepath, as_attachment=True)
+            
+        return jsonify({'erro': 'Arquivo não encontrado. Tente gerar novamente.'}), 404
+        
     except Exception as e:
-        return jsonify({'erro': f'Erro ao baixar: {str(e)}'}), 500
+        return jsonify({'erro': str(e)}), 500
 
 if __name__ == '__main__':
     print("🚀 Aplicação Flask iniciada!")
