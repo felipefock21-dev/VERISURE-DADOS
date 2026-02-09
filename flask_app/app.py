@@ -450,31 +450,31 @@ def upload_all_reports_to_drive(timestamp):
         # Encontra os arquivos MAIS RECENTES de cada tipo
         import glob
         
-        # Procura o COMPILADO com esse timestamp
-        compilado_files = sorted(
-            glob.glob(os.path.join(saidas_path, f'COMPILADO_{timestamp}.xlsx')),
-            key=lambda x: os.path.getmtime(x),
-            reverse=True
-        )
+        # Procura o COMPILADO com esse timestamp (pode ser .xlsx ou .csv)
+        compilado_files = []
+        for ext in ['.xlsx', '.csv']:
+            compilado_files.extend(glob.glob(os.path.join(saidas_path, f'COMPILADO_{timestamp}{ext}')))
+        compilado_files = sorted(compilado_files, key=lambda x: os.path.getmtime(x), reverse=True)
         
-        # Procura o MENSAL mais recente
-        mensal_files = sorted(
-            glob.glob(os.path.join(saidas_path, 'RELATORIO_MENSAL_*.xlsx')),
-            key=lambda x: os.path.getmtime(x),
-            reverse=True
-        )
+        # Procura o MENSAL mais recente (pode ser .xlsx ou .csv)
+        mensal_files = []
+        for ext in ['.xlsx', '.csv']:
+            mensal_files.extend(glob.glob(os.path.join(saidas_path, f'RELATORIO_MENSAL_*{ext}')))
+        mensal_files = sorted(mensal_files, key=lambda x: os.path.getmtime(x), reverse=True)
         
-        # Procura o SEMANAL mais recente
-        semanal_files = sorted(
-            glob.glob(os.path.join(saidas_path, 'RELATORIO_SEMANAL_*.xlsx')),
-            key=lambda x: os.path.getmtime(x),
-            reverse=True
-        )
+        # Procura o SEMANAL mais recente (pode ser .xlsx ou .csv)
+        semanal_files = []
+        for ext in ['.xlsx', '.csv']:
+            semanal_files.extend(glob.glob(os.path.join(saidas_path, f'RELATORIO_SEMANAL_*{ext}')))
+        semanal_files = sorted(semanal_files, key=lambda x: os.path.getmtime(x), reverse=True)
         
         files_to_upload = []
         
         if compilado_files:
             files_to_upload.append((compilado_files[0], os.path.basename(compilado_files[0]), 'COMPILADO'))
+        else:
+            print(f"[UPLOAD] ⚠️ Arquivo COMPILADO não encontrado para timestamp {timestamp}")
+            
         if mensal_files:
             files_to_upload.append((mensal_files[0], os.path.basename(mensal_files[0]), 'MENSAL'))
         if semanal_files:
@@ -487,7 +487,7 @@ def upload_all_reports_to_drive(timestamp):
                 print(f"\n[UPLOAD] 📤 Uploading {tipo}...")
                 print(f"[UPLOAD] Arquivo: {filename}")
                 file_id = upload_to_drive(filepath, filename)
-                results[tipo] = {'sucesso': file_id is not None, 'file_id': file_id}
+                results[tipo] = {'sucesso': file_id is not None, 'file_id': file_id, 'filename': filename}
                 print(f"[UPLOAD] {tipo}: {'✅' if file_id else '❌'}")
             else:
                 print(f"\n[UPLOAD] ⚠️ Arquivo não encontrado: {filepath}")
