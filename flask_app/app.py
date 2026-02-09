@@ -43,7 +43,7 @@ warnings.filterwarnings('ignore')
 PROGRESS_FILE = 'upload_progress.json'
 
 def atualizar_progresso(etapa, percentual, mensagem):
-    """Atualiza o progresso em um arquivo compartilhado entre processos"""
+    """Atualiza o progresso em um arquivo compartilhado de forma atômica"""
     progress = {
         'etapa': etapa,
         'percentual': min(percentual, 100),
@@ -51,8 +51,11 @@ def atualizar_progresso(etapa, percentual, mensagem):
         'timestamp': time.time()
     }
     try:
-        with open(PROGRESS_FILE, 'w') as f:
+        # Escrita atômica: escreve em arquivo temporário e renomeia
+        temp_progress = f"{PROGRESS_FILE}.tmp"
+        with open(temp_progress, 'w') as f:
             json.dump(progress, f)
+        os.replace(temp_progress, PROGRESS_FILE)
     except Exception as e:
         print(f"[PROGRESSO] Erro ao gravar: {e}")
     print(f"[PROGRESSO] {percentual}% - {mensagem}")
@@ -163,15 +166,23 @@ def progresso_sse():
             if progress.get('percentual') != ultimo_percentual:
                 yield f"data: {json.dumps(progress)}\n\n"
                 ultimo_percentual = progress.get('percentual')
+            else:
+                # Comentário Keep-alive para evitar timeout em proxies (Nginx/Railway)
+                yield ": heartbeat\n\n"
             
             # Se terminou, mantém um pouco mais e para
             if progress.get('etapa') == 4:
                 time.sleep(2)
                 break
                 
-            time.sleep(0.8)
+            time.sleep(1.0) # Frequência de atualização
     
-    return Response(gerar_progresso(), mimetype='text/event-stream')
+    response = Response(gerar_progresso(), mimetype='text/event-stream')
+    # Headers para evitar buffering em proxies
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    response.headers['Connection'] = 'keep-alive'
+    return response
 
 @app.route('/oauth-status')
 def oauth_status():

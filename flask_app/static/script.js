@@ -302,13 +302,25 @@ async function processarArquivo() {
 // SERVER-SENT EVENTS (SSE) - RECEBER PROGRESSO REAL
 // =============================================================================
 
+let sseRetryCount = 0;
+const MAX_SSE_RETRIES = 5;
+
 function conectarSSE() {
+    if (eventSource) {
+        eventSource.close();
+    }
+
+    console.log('[SSE] Iniciando conexão...');
     eventSource = new EventSource('/progresso');
 
     eventSource.onmessage = function (event) {
         try {
             const data = JSON.parse(event.data);
             console.log('[SSE] Progresso:', data);
+
+            // Resetar retry count ao receber mensagem válida
+            sseRetryCount = 0;
+
             atualizarProgressBar(data.percentual);
 
             // Atualizar etapa visual
@@ -318,7 +330,7 @@ function conectarSSE() {
 
             // SE CHEGOU NO 100% (ETAPA 4), busca o resultado final
             if (data.etapa === 4 || data.percentual >= 100) {
-                console.log('[SSE] Processamento concluído! Buscando resultado...');
+                console.log('[SSE] Processamento concluído via SSE! Buscando resultado...');
                 desconectarSSE();
                 if (window.currentTaskTimestamp) {
                     buscarResultadoFinal(window.currentTaskTimestamp);
@@ -330,8 +342,18 @@ function conectarSSE() {
     };
 
     eventSource.onerror = function (error) {
-        console.log('[SSE] Conexão finalizada');
-        desconectarSSE();
+        console.warn('[SSE] Conexão interrompida.');
+
+        if (sseRetryCount < MAX_SSE_RETRIES) {
+            sseRetryCount++;
+            console.log(`[SSE] Tentativa de reconexão ${sseRetryCount}/${MAX_SSE_RETRIES}...`);
+        } else {
+            console.error('[SSE] Máximo de tentativas de reconexão atingido.');
+            if (window.currentTaskTimestamp) {
+                console.log('[SSE] Fallback: Iniciando busca de resultado final por polling...');
+                buscarResultadoFinal(window.currentTaskTimestamp);
+            }
+        }
     };
 }
 
