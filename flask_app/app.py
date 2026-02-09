@@ -703,16 +703,6 @@ def save_to_saidas(df, filename, apply_formatting=False):
         # Preparar colunas para exportação (sem fazer cópia completa)
         cols_to_export = [col for col in df.columns if not str(col).startswith('Unnamed')]
         
-        # Para arquivos muito grandes (>50k linhas), usar CSV como fallback
-        if len(df) > 50000:
-            print(f"[SAIDAS] ⚠️ Arquivo grande ({len(df)} linhas), usando CSV para evitar timeout...")
-            csv_filepath = filepath.replace('.xlsx', '.csv')
-            df[cols_to_export].to_csv(csv_filepath, index=False, encoding='utf-8-sig')
-            print(f"[SAIDAS] ✅ Arquivo CSV salvo: {csv_filepath}")
-            elapsed = time.time() - start_time
-            print(f"[SAIDAS] ⏱️ Tempo de salvamento: {elapsed:.2f}s")
-            return csv_filepath
-        
         # Salvar Excel normalmente
         print(f"[SAIDAS] 💾 Iniciando escrita Excel...")
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
@@ -735,16 +725,17 @@ def save_to_saidas(df, filename, apply_formatting=False):
         
         return filepath
     except Exception as e:
-        print(f"[SAIDAS] ❌ Erro ao salvar: {str(e)}")
+        print(f"[SAIDAS] ❌ Erro ao salvar Excel: {str(e)}")
         import traceback
         traceback.print_exc()
         
-        # Fallback: tentar salvar como CSV
+        # Fallback: tentar salvar como CSV SOMENTE se Excel falhar
         try:
-            print(f"[SAIDAS] 🔄 Tentando fallback para CSV...")
+            print(f"[SAIDAS] 🔄 Excel falhou, tentando fallback para CSV...")
             csv_filepath = filepath.replace('.xlsx', '.csv')
             df[cols_to_export].to_csv(csv_filepath, index=False, encoding='utf-8-sig')
             print(f"[SAIDAS] ✅ Arquivo CSV salvo como fallback: {csv_filepath}")
+            gc.collect()
             return csv_filepath
         except Exception as csv_error:
             print(f"[SAIDAS] ❌ Fallback CSV também falhou: {str(csv_error)}")
