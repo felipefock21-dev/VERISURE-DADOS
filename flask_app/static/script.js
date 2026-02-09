@@ -345,17 +345,25 @@ function conectarSSE() {
     };
 
     eventSource.onerror = function (error) {
-        console.warn('[SSE] Conexão interrompida.');
+        // EventSource tenta reconectar automaticamente, então só logamos se for crítico
+        if (eventSource.readyState === EventSource.CLOSED) {
+            console.warn('[SSE] Conexão fechada permanentemente.');
 
-        if (sseRetryCount < MAX_SSE_RETRIES) {
-            sseRetryCount++;
-            console.log(`[SSE] Tentativa de reconexão ${sseRetryCount}/${MAX_SSE_RETRIES}...`);
-        } else {
-            console.error('[SSE] Máximo de tentativas de reconexão atingido.');
-            if (window.currentTaskTimestamp) {
-                console.log('[SSE] Fallback: Iniciando busca de resultado final por polling...');
-                buscarResultadoFinal(window.currentTaskTimestamp);
+            if (sseRetryCount < MAX_SSE_RETRIES) {
+                sseRetryCount++;
+                console.log(`[SSE] Tentativa de reconexão ${sseRetryCount}/${MAX_SSE_RETRIES}...`);
+                // EventSource reconecta automaticamente, não precisamos fazer nada
+            } else {
+                console.error('[SSE] Máximo de tentativas de reconexão atingido.');
+                desconectarSSE();
+                if (window.currentTaskTimestamp) {
+                    console.log('[SSE] Fallback: Iniciando busca de resultado final por polling...');
+                    buscarResultadoFinal(window.currentTaskTimestamp);
+                }
             }
+        } else {
+            // Conexão temporariamente interrompida, EventSource reconectará automaticamente
+            console.log('[SSE] Reconectando automaticamente...');
         }
     };
 }

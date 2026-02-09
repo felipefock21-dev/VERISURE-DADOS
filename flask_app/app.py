@@ -162,22 +162,25 @@ def progresso_sse():
     """Server-Sent Events para enviar progresso em tempo real (lendo do arquivo)"""
     def gerar_progresso():
         ultimo_percentual = -1
+        heartbeat_counter = 0
         while True:
             progress = ler_progresso()
             # Só envia se houver mudança significativa ou for novo
             if progress.get('percentual') != ultimo_percentual:
                 yield f"data: {json.dumps(progress)}\n\n"
                 ultimo_percentual = progress.get('percentual')
+                heartbeat_counter = 0
             else:
-                # Comentário Keep-alive para evitar timeout em proxies (Nginx/Railway)
-                yield ": heartbeat\n\n"
+                # Heartbeat mais frequente para evitar timeout
+                heartbeat_counter += 1
+                yield f": heartbeat {heartbeat_counter}\n\n"
             
             # Se terminou, mantém um pouco mais e para
             if progress.get('etapa') == 4:
                 time.sleep(2)
                 break
                 
-            time.sleep(1.0) # Frequência de atualização
+            time.sleep(0.5)  # Heartbeat a cada 500ms (mais frequente)
     
     response = Response(gerar_progresso(), mimetype='text/event-stream')
     # Headers para evitar buffering em proxies
