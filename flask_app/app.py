@@ -12,6 +12,7 @@ from datetime import datetime
 import warnings
 import re
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 import io
 import time
 import gspread
@@ -59,6 +60,9 @@ OAUTH_CONFIGURED = os.path.exists(TOKEN_FILE)
 print(f"[OAUTH] Status inicial: {'✅ Token carregado' if OAUTH_CONFIGURED else '⚠️ Não autenticado - acesse /authorize'}")
 
 app = Flask(__name__)
+# Configurar ProxyFix para Railway (essencial para url_for usar HTTPS)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max
 app.config['UPLOAD_FOLDER'] = 'temp_uploads'
 app.config['SAIDAS_FOLDER'] = 'saidas'
@@ -80,10 +84,36 @@ def add_cors_headers(response):
 @app.route('/authorize')
 def authorize():
     """Redireciona para a página de login do Google"""
-    auth_url, state = authorize_url()
+    # Gera o redirect_uri dinâmico baseado na URL de deploy configurada
+    from oauth_config import DEPLOY_URL
+    redirect_uri = f"{DEPLOY_URL}/oauth2callback"
+    
+    print(f"[OAUTH] 🔑 Gerando URL de autorização...")
+    print(f"[OAUTH]    Host atual: {request.host}")
+    print(f"[OAUTH]    Redirect URI gerado: {redirect_uri}")
+    
+    auth_url, state = authorize_url(redirect_uri=redirect_uri)
     session['oauth_state'] = state
-    print(f"[OAUTH] 🔐 Redirecionando para Google OAuth...")
     return redirect(auth_url)
+
+@app.route('/debug-oauth')
+def debug_oauth():
+    """Rota de diagnóstico para verificar o Redirect URI gerado"""
+    from oauth_config import DEPLOY_URL, OAUTH_REDIRECT_URI, OAUTH_CLIENT_ID
+    
+    scheme = 'https' if 'localhost' not in request.host else 'http'
+    url_for_uri = url_for('oauth2callback', _external=True, _scheme=scheme)
+    
+    return jsonify({
+        'config_deploy_url': DEPLOY_URL,
+        'config_redirect_uri': OAUTH_REDIRECT_URI,
+        'url_for_generated_uri': url_for_uri,
+        'client_id': OAUTH_CLIENT_ID,
+        'host_header': request.host,
+        'request_scheme': request.scheme,
+        'env_deploy_url': os.getenv("DEPLOY_URL"),
+        'instrucao': 'Garanta que "config_redirect_uri" esteja EXATAMENTE IGUAL no Google Cloud Console.'
+    })
 
 @app.route('/oauth2callback')
 def oauth2callback():
@@ -95,10 +125,17 @@ def oauth2callback():
         return jsonify({'erro': 'Autorização negada'}), 401
     
     try:
-        creds = exchange_code_for_token(code)
+        # Importante: usar o mesmo redirect_uri dinâmico da autorização (com HTTPS se necessário)
+        from oauth_config import DEPLOY_URL
+        redirect_uri = f"{DEPLOY_URL}/oauth2callback"
+        
+        print(f"[OAUTH] 🔄 Processando callback...")
+        print(f"[OAUTH]    Redirect URI usado para troca de token: {redirect_uri}")
+        
+        creds = exchange_code_for_token(code, redirect_uri=redirect_uri)
         print(f"[OAUTH] ✅ Autenticação bem-sucedida!")
-        # Redireciona para a página principal em vez de retornar JSON
-        return redirect('/')
+        print(f"[OAUTH] ✅ Autenticação bem-sucedida! Redirecionando para a página principal...")
+        return redirect(url_for('index', _external=True))
     except Exception as e:
         print(f"[OAUTH] ❌ Erro na autenticação: {str(e)}")
         return jsonify({'erro': f'Erro na autenticação: {str(e)}'}), 401

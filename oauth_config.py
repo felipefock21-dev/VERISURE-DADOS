@@ -6,12 +6,11 @@ Obtenha o Client ID e Client Secret em: https://console.cloud.google.com/
 import os
 
 # Lê de variáveis de ambiente (para deploy) ou usa valores locais
-OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "264311763921-d0kmd339k01jgtkbvjlqvrfn29d9h0am.apps.googleusercontent.com")
-OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET", "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")
+OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "COLOQUE_SEU_CLIENT_ID_AQUI")
+OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET", "COLOQUE_SEU_CLIENT_SECRET_AQUI")
 
-# URL dinâmica baseada no ambiente
-import os
-DEPLOY_URL = os.getenv("DEPLOY_URL", "http://localhost:5000")
+# URL do deploy (garante que nao termina com / para evitar // no callback)
+DEPLOY_URL = os.getenv("DEPLOY_URL", "https://verisure-dados.up.railway.app").rstrip("/")
 OAUTH_REDIRECT_URI = f"{DEPLOY_URL}/oauth2callback"
 
 # Pasta para upload (ID que você já tem)

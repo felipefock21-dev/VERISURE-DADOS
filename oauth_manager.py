@@ -10,22 +10,24 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from oauth_config import OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI, OAUTH_SCOPES, TOKEN_FILE
 
-def get_oauth_flow():
+def get_oauth_flow(redirect_uri=None):
     """Cria um novo flow OAuth 2.0"""
+    selected_redirect_uri = redirect_uri if redirect_uri else OAUTH_REDIRECT_URI
+    
     client_config = {
-        "installed": {
+        "web": {
             "client_id": OAUTH_CLIENT_ID,
             "client_secret": OAUTH_CLIENT_SECRET,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [OAUTH_REDIRECT_URI],
+            "redirect_uris": [selected_redirect_uri],
         }
     }
     
     flow = Flow.from_client_config(
         client_config,
         scopes=OAUTH_SCOPES,
-        redirect_uri=OAUTH_REDIRECT_URI
+        redirect_uri=selected_redirect_uri
     )
     
     return flow
@@ -79,18 +81,18 @@ def load_credentials():
         print(f"[OAUTH] ❌ Erro ao carregar credenciais: {str(e)}")
         return None
 
-def authorize_url():
+def authorize_url(redirect_uri=None):
     """Gera URL para autorização do usuário"""
-    flow = get_oauth_flow()
+    flow = get_oauth_flow(redirect_uri=redirect_uri)
     auth_url, state = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true'
     )
     return auth_url, state
 
-def exchange_code_for_token(code):
+def exchange_code_for_token(code, redirect_uri=None):
     """Troca o código de autorização por token"""
-    flow = get_oauth_flow()
+    flow = get_oauth_flow(redirect_uri=redirect_uri)
     flow.fetch_token(code=code)
     creds = flow.credentials
     save_credentials(creds)
