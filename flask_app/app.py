@@ -1095,46 +1095,56 @@ def passo1_compilar(arquivo_path):
                 sheet_name = sheet_info['name']
                 sheet_id = sheet_info['id']
                 
-                # Calcula percentual progressivo (de 20% a 35%)
-                perc = 20 + int((i / len(report_sheets)) * 15)
-                atualizar_progresso(1, perc, f"Lendo do Drive: {sheet_name}")
+                try:
+                    import psutil
+                    mem = psutil.Process().memory_info().rss / (1024 * 1024)
+                    print(f"\n[PASSO 1] [{i}/{len(report_sheets)}] Analisando: {sheet_name} (Memoria: {mem:.1f}MB)")
+                    
+                    # Calcula percentual progressivo (de 20% a 35%)
+                    perc = 20 + int((i / len(report_sheets)) * 15)
+                    atualizar_progresso(1, perc, f"Lendo do Drive: {sheet_name}")
 
-                # Lê o arquivo
-                df = read_google_sheet(sheets_service, sheet_id, sheet_name)
-                
-                if df is not None and not df.empty:
-                    # Remove segunda linha se necessário
-                    if len(df) > 1:
-                        df = df.drop(index=0).reset_index(drop=True)
+                    # Lê o arquivo
+                    df = read_google_sheet(sheets_service, sheet_id, sheet_name)
                     
-                    # Limpa
-                    df = clean_dataframe(df)
-                    
-                    # Seleciona colunas
-                    df = select_required_columns(df)
-                    
-                    if not df.empty:
-                        # Processa tipos
-                        df = process_data_types(df)
+                    if df is not None and not df.empty:
+                        # Remove segunda linha se necessário
+                        if len(df) > 1:
+                            df = df.drop(index=0).reset_index(drop=True)
                         
-                        # Recalcula Mês Comercial (2026)
-                        df = calculate_mes_comercial(df)
+                        # Limpa
+                        df = clean_dataframe(df)
                         
-                        # Converte Preço
-                        if 'Preço' in df.columns:
-                            df['Preço'] = df['Preço'].apply(clean_price_value)
-                            df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce')
-                            df['Preço'] = df['Preço'].fillna(0)
+                        # Seleciona colunas
+                        df = select_required_columns(df)
                         
-                        # Remove duplicatas
-                        df, dup_removed = remove_duplicates_properly(df)
-                        
-                        all_dataframes.append(df)
-                        print(f"[PASSO 1]       ✅ {len(df)} registros válidos adicionados")
+                        if not df.empty:
+                            # Processa tipos
+                            df = process_data_types(df)
+                            
+                            # Recalcula Mês Comercial (2026)
+                            df = calculate_mes_comercial(df)
+                            
+                            # Converte Preço
+                            if 'Preço' in df.columns:
+                                df['Preço'] = df['Preço'].apply(clean_price_value)
+                                df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce')
+                                df['Preço'] = df['Preço'].fillna(0)
+                            
+                            # Remove duplicatas
+                            df, dup_removed = remove_duplicates_properly(df)
+                            
+                            all_dataframes.append(df)
+                            print(f"[PASSO 1]       ✅ {len(df)} registros válidos adicionados")
+                        else:
+                            print(f"[PASSO 1]       ⚠️ Nenhum dado válido após limpeza")
                     else:
-                        print(f"[PASSO 1]       ⚠️ Nenhum dado válido após limpeza")
-                else:
-                    print(f"[PASSO 1]       ❌ Erro na leitura")
+                        print(f"[PASSO 1]       ❌ Erro na leitura ou arquivo vazio")
+                except Exception as loop_e:
+                    print(f"[PASSO 1] ❌ Falha crítica no arquivo '{sheet_name}': {str(loop_e)}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
         
         # ========== ETAPA 3: Unificar todos os dados ==========
         atualizar_progresso(1, 36, "Unificando dados e removendo duplicatas...")
