@@ -1229,28 +1229,54 @@ def passo1_compilar(arquivo_path):
         if df_dados_id is not None:
             print(f"[PASSO 1]    ✅ DadosIdentificador carregado: {len(df_dados_id)} registros")
             
-            # Converter ambos para string
-            unified_df['Identificador'] = unified_df['Identificador'].astype(str)
-            df_dados_id['Identificador'] = df_dados_id['Identificador'].astype(str)
+            # Converter ambos para string E NORMALIZAR (strip/upper) para garantir match
+            unified_df['Identificador'] = unified_df['Identificador'].astype(str).str.strip().str.upper()
+            df_dados_id['Identificador'] = df_dados_id['Identificador'].astype(str).str.strip().str.upper()
             
             # Realiza o merge
             unified_df = unified_df.merge(df_dados_id, on='Identificador', how='left')
             print(f"[PASSO 1]    ✅ Merge realizado: {len(unified_df)} registros")
             
+            # Verifica quantos não tiveram match (Identificador não encontrado)
+            # Se 'Universo' veio do merge, será NaN onde não houve match
+            if 'Universo' in unified_df.columns:
+                missing_match = unified_df['Universo'].isna().sum()
+                if missing_match > 0:
+                    print(f"[PASSO 1] ⚠️ AVISO: {missing_match} registros não encontraram correspondência em DadosIdentificador (Universo será 0)")
+                    # DEBUG: Mostra alguns identificadores sem match
+                    missing_ids = unified_df[unified_df['Universo'].isna()]['Identificador'].unique()[:5]
+                    print(f"[PASSO 1]    Exemplos de IDs sem match: {missing_ids}")
+            
             # Libera DadosIdentificador após merge
             del df_dados_id
             gc.collect()
             
+            # Helper para limpar strings numéricas PT-BR (1.000,00 -> 1000.00)
+            def clean_number_str(val):
+                if pd.isna(val): return val
+                if isinstance(val, (int, float)): return val
+                val = str(val).strip()
+                if val == '': return 0
+                # Remove separador de milhar (.) e troca virgula decimal por ponto
+                val = val.replace('.', '').replace(',', '.')
+                return val
+
             # Converte 'porc' para numérico se existir
             if 'porc' in unified_df.columns:
+                unified_df['porc'] = unified_df['porc'].apply(clean_number_str)
                 unified_df['porc'] = pd.to_numeric(unified_df['porc'], errors='coerce')
             
             # Converte Universo para numérico
             if 'Universo' in unified_df.columns:
+                unified_df['Universo'] = unified_df['Universo'].apply(clean_number_str)
                 unified_df['Universo'] = pd.to_numeric(unified_df['Universo'], errors='coerce')
             
             # Calcula PMM no Target
             if 'PMM' in unified_df.columns and 'porc' in unified_df.columns:
+                # Garante que PMM também esteja limpo
+                unified_df['PMM'] = unified_df['PMM'].apply(clean_number_str)
+                unified_df['PMM'] = pd.to_numeric(unified_df['PMM'], errors='coerce').fillna(0)
+                
                 unified_df['PMM no Target'] = (unified_df['PMM'] * (unified_df['porc'] / 100)).round(2)
                 unified_df['PMM no Target'] = unified_df['PMM no Target'].fillna(0)
                 print(f"[PASSO 1]    ✅ Coluna 'PMM no Target' calculada")
