@@ -69,16 +69,37 @@ def load_credentials():
         )
         
         # Se token expirou, refresh automaticamente
-        if creds.expired and creds.refresh_token:
-            request = Request()
-            creds.refresh(request)
-            save_credentials(creds)
-            print("[OAUTH] ✅ Token refreshado automaticamente")
+        if creds.expired:
+            if creds.refresh_token:
+                try:
+                    request = Request()
+                    creds.refresh(request)
+                    save_credentials(creds)
+                    print("[OAUTH] ✅ Token refreshado automaticamente")
+                except Exception as refresh_error:
+                    print(f"[OAUTH] ❌ Erro ao refreshar token: {str(refresh_error)}")
+                    # Se falhar o refresh, deletar token para forçar login
+                    if os.path.exists(TOKEN_FILE):
+                        os.remove(TOKEN_FILE)
+                        print(f"[OAUTH] ⚠️ Arquivo de token removido para forçar novo login.")
+                    return None
+            else:
+                print("[OAUTH] ⚠️ Token expirado e SEM refresh_token. Forçando novo login.")
+                if os.path.exists(TOKEN_FILE):
+                    os.remove(TOKEN_FILE)
+                return None
         
         return creds
     
     except Exception as e:
         print(f"[OAUTH] ❌ Erro ao carregar credenciais: {str(e)}")
+        # Em caso de erro (arquivo corrompido, etc), deletar para forçar login
+        if os.path.exists(TOKEN_FILE):
+            try:
+                os.remove(TOKEN_FILE)
+                print(f"[OAUTH] ⚠️ Arquivo de token removido após erro..")
+            except:
+                pass
         return None
 
 def authorize_url(redirect_uri=None):
@@ -86,7 +107,8 @@ def authorize_url(redirect_uri=None):
     flow = get_oauth_flow(redirect_uri=redirect_uri)
     auth_url, state = flow.authorization_url(
         access_type='offline',
-        include_granted_scopes='true'
+        include_granted_scopes='true',
+        prompt='consent'  # FORÇA O GOOGLE A ENVIAR O REFRESH TOKEN
     )
     return auth_url, state
 

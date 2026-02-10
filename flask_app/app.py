@@ -1959,7 +1959,13 @@ def passo3_semanal(df_compilado=None):
         return result_df, None
     
     except Exception as e:
-        return None, f"Erro no passo 3: {str(e)}"
+        print(f"[PASSO 3] ❌ ERRO CRÍTICO no relatório semanal:")
+        print(f"[PASSO 3] Tipo do erro: {type(e).__name__}")
+        print(f"[PASSO 3] Mensagem: {str(e)}")
+        import traceback
+        print(f"[PASSO 3] Stack trace completo:")
+        traceback.print_exc()
+        return None, f"Erro no passo 3: {type(e).__name__} - {str(e)}"
 
 # ==============================================================================
 # FUNÇÃO: ATUALIZAR RELATORIO SEMANAL OFICIAL
@@ -2294,7 +2300,9 @@ def processar_em_background(filepath, timestamp_task):
             else:
                 mensagem_tabela = {'tipo': 'erro', 'cor': 'vermelho', 'mensagem': '❌ Erro ao atualizar tabela oficial', 'detalhes': str(atualizar_resultado)}
         else:
-            mensagem_tabela = {'tipo': 'info', 'cor': 'cinza', 'mensagem': 'ℹ️ Relatório semanal não foi gerado', 'detalhes': 'Capas de rádio não encontradas'}
+            # Mostra o erro real do passo 3 em vez de mensagem genérica
+            erro_detalhado = erro if erro else 'Relatório semanal retornou vazio'
+            mensagem_tabela = {'tipo': 'info', 'cor': 'cinza', 'mensagem': 'ℹ️ Relatório semanal não foi gerado', 'detalhes': erro_detalhado}
 
         # Prepara resultado final
         resultado_final = {
