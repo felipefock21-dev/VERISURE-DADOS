@@ -2053,22 +2053,25 @@ def atualizar_semanal_oficial(df_semanal_novo):
             print(f"[SEMANAL OFICIAL] ❌ Nenhuma coluna em comum para fazer comparação!")
             return {'status': 'erro', 'mensagem': 'Nenhuma coluna em comum para fazer comparação'}
         
+        if not colunas_chave:
+            print(f"[SEMANAL OFICIAL] ❌ Nenhuma coluna em comum para fazer comparação!")
+            return {'status': 'erro', 'mensagem': 'Nenhuma coluna em comum para fazer comparação'}
+        
         print(f"[SEMANAL OFICIAL] 🔑 Colunas da chave composta: {colunas_chave}")
         
-        # DEBUG: Mostra primeiras linhas de cada dataset
-        print(f"[SEMANAL OFICIAL] DEBUG - Primeiras linhas do novo dataset:")
-        print(f"[SEMANAL OFICIAL]   {df_semanal_novo[colunas_chave].head(3).to_string()}")
-        print(f"[SEMANAL OFICIAL] DEBUG - Primeiras linhas do arquivo oficial:")
-        print(f"[SEMANAL OFICIAL]   {df_oficial[colunas_chave].head(3).to_string()}")
+        # DEBUG: Mostra tipos de dados
+        print(f"[SEMANAL OFICIAL] 🔍 Tipos de dados (Novo):")
+        print(df_semanal_novo[colunas_chave].dtypes)
+        print(f"[SEMANAL OFICIAL] 🔍 Tipos de dados (Oficial):")
+        print(df_oficial[colunas_chave].dtypes)
         
         # Cria identificador único para cada linha usando apenas as colunas disponíveis
-        df_oficial['_chave'] = df_oficial[colunas_chave].astype(str).apply(lambda row: '|'.join(row), axis=1)
-        df_semanal_novo['_chave'] = df_semanal_novo[colunas_chave].astype(str).apply(lambda row: '|'.join(row), axis=1)
+        # Força string e strip para garantir match
+        df_oficial['_chave'] = df_oficial[colunas_chave].astype(str).apply(lambda row: '|'.join(row.str.strip().str.upper()), axis=1)
+        df_semanal_novo['_chave'] = df_semanal_novo[colunas_chave].astype(str).apply(lambda row: '|'.join(row.str.strip().str.upper()), axis=1)
         
         print(f"[SEMANAL OFICIAL] Exemplo de chave oficial: {df_oficial['_chave'].iloc[0] if len(df_oficial) > 0 else 'N/A'}")
         print(f"[SEMANAL OFICIAL] Exemplo de chave novo: {df_semanal_novo['_chave'].iloc[0] if len(df_semanal_novo) > 0 else 'N/A'}")
-        print(f"[SEMANAL OFICIAL] DEBUG - Chaves oficial (primeiras 3): {list(df_oficial['_chave'].unique()[:3])}")
-        print(f"[SEMANAL OFICIAL] DEBUG - Chaves novo (primeiras 3): {list(df_semanal_novo['_chave'].unique()[:3])}")
         
         # Identifica as linhas novas (que não existem no arquivo oficial)
         chaves_oficiais = set(df_oficial['_chave'].unique())
@@ -2080,11 +2083,6 @@ def atualizar_semanal_oficial(df_semanal_novo):
         # Verifica quantas chaves são comuns
         chaves_comuns = chaves_oficiais.intersection(chaves_novo)
         print(f"[SEMANAL OFICIAL] 🔄 Chaves em COMUM (já existem): {len(chaves_comuns)}")
-        
-        if len(chaves_comuns) == 0:
-            print(f"[SEMANAL OFICIAL] ⚠️ AVISO: Nenhuma chave em comum! Arquivo pode estar diferente.")
-            print(f"[SEMANAL OFICIAL]    Exemplo de chave oficial: {list(chaves_oficiais)[:1]}")
-            print(f"[SEMANAL OFICIAL]    Exemplo de chave novo: {list(chaves_novo)[:1]}")
         
         linhas_novas_df = df_semanal_novo[~df_semanal_novo['_chave'].isin(chaves_oficiais)]
         
@@ -2112,7 +2110,12 @@ def atualizar_semanal_oficial(df_semanal_novo):
         # Verifica se houve mudanças
         if len(df_combinado) == len(df_oficial):
             print(f"[SEMANAL OFICIAL] ⚠️ Nenhuma mudança no total de linhas!")
-            return {'status': 'info', 'mensagem': 'Nenhuma mudança no arquivo'}
+            return {
+                'status': 'info', 
+                'mensagem': 'Nenhuma mudança no arquivo (0 linhas novas)',
+                'debug_keys_oficial': list(df_oficial['_chave'].head(5).astype(str).values),
+                'debug_keys_novo': list(df_semanal_novo['_chave'].head(5).astype(str).values)
+            }
         
         print(f"[SEMANAL OFICIAL] ✅ Preparando upload: {len(df_oficial)} linhas originais + {linhas_novas} novas = {len(df_combinado)} total")
         print(f"[SEMANAL OFICIAL] 📋 Colunas finais para upload: {list(df_combinado.columns)}")
