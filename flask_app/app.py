@@ -2197,9 +2197,19 @@ def atualizar_semanal_oficial(df_semanal_novo):
             # REESCREVE A TABELA A PARTIR DA LINHA 2 COM O DATAFRAME COMBINADO
             # Isso garante que não haja buracos e a ordem seja respeitada
             total_rows = 0
+            total_lines_df = len(df_combinado)
+            
+            # Atualiza progresso inicial
+            atualizar_progresso(3, 76, f"Escrevendo {total_lines_df} linhas no arquivo oficial...")
+            
             for idx, row in df_combinado.iterrows():
                 current_row = 2 + idx  # Começa na linha 2
                 total_rows += 1
+                
+                # Feedback a cada 100 linhas para não travar o front
+                if total_rows % 100 == 0:
+                    perc = 76 + int((total_rows / total_lines_df) * 10)  # Vai de 76% a 86%
+                    atualizar_progresso(3, perc, f"Escrevendo linha {total_rows}/{total_lines_df}...")
                 
                 for col_name in df_combinado.columns:
                     target_col_idx = header_map.get(str(col_name).strip())
@@ -2229,6 +2239,7 @@ def atualizar_semanal_oficial(df_semanal_novo):
                 ws.delete_rows(rows_to_clear_start, amount=(max_row_original - rows_to_clear_start + 1))
             
             # Salva o workbook atualizado
+            atualizar_progresso(3, 87, "Salvando arquivo Excel em memória...")
             wb_original.save(output)
             output.seek(0)
             
