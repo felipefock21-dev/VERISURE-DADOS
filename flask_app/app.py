@@ -2142,17 +2142,6 @@ def atualizar_semanal_oficial(df_semanal_novo):
             wb_original = load_workbook(fh_original)
             ws = wb_original.active
             
-            # Encontra a última linha com dados (ignora linhas formatadas mas vazias)
-            last_row = 1
-            for row in range(ws.max_row, 1, -1):
-                # Verifica se a linha tem algum valor
-                has_value = any(ws.cell(row=row, column=c).value is not None for c in range(1, ws.max_column + 1))
-                if has_value:
-                    last_row = row
-                    break
-            
-            print(f"[SEMANAL OFICIAL] 📋 Última linha com DADOS: {last_row} (max_row era {ws.max_row})")
-            
             # Mapeamento de colunas: Nome -> Índice (1-based)
             # Lê o cabeçalho da planilha (linha 1)
             header_map = {}
@@ -2163,44 +2152,55 @@ def atualizar_semanal_oficial(df_semanal_novo):
             
             print(f"[SEMANAL OFICIAL] 🗺️ Mapeamento de colunas (Excel): {header_map}")
             
-            # Prepara estilos para nova linha baseado na última linha de dados
-            source_row_idx = last_row
-            if source_row_idx < 2: source_row_idx = 2 # Evita pegar header se só tiver header
+            # Captura estilo da linha 2 (primeira linha de dados) para replicar
+            style_template = {}
+            if ws.max_row >= 2:
+                for col_idx in range(1, ws.max_column + 1):
+                    cell = ws.cell(row=2, column=col_idx)
+                    if cell.has_style:
+                        style_template[col_idx] = {
+                            'font': copy(cell.font),
+                            'fill': copy(cell.fill),
+                            'border': copy(cell.border),
+                            'alignment': copy(cell.alignment),
+                            'number_format': cell.number_format
+                        }
             
-            # Adiciona as novas linhas mantendo formatação
-            total_added = 0
-            for idx, row in linhas_novas_df.iterrows():
-                new_row = last_row + idx + 1
-                total_added += 1
+            print(f"[SEMANAL OFICIAL] 🖌️ Estilo capturado da linha 2 para replicação")
+
+            # REESCREVE A TABELA A PARTIR DA LINHA 2 COM O DATAFRAME COMBINADO
+            # Isso garante que não haja buracos e a ordem seja respeitada
+            total_rows = 0
+            for idx, row in df_combinado.iterrows():
+                current_row = 2 + idx  # Começa na linha 2
+                total_rows += 1
                 
-                # Para cada coluna no DataFrame NOVO
-                for col_name in linhas_novas_df.columns:
-                    # Verifica onde essa coluna deve ir no Excel
+                for col_name in df_combinado.columns:
                     target_col_idx = header_map.get(str(col_name).strip())
                     
                     if target_col_idx:
-                        cell = ws.cell(row=new_row, column=target_col_idx)
+                        cell = ws.cell(row=current_row, column=target_col_idx)
                         cell.value = row[col_name]
                         
-                        # Copia formatação da linha anterior (se existir e for seguro)
-                        if source_row_idx >= 2:
-                            try:
-                                ref_cell = ws.cell(row=source_row_idx, column=target_col_idx)
-                                if ref_cell.has_style:
-                                    # Copiar estilo básico para evitar erros complexos
-                                    cell.number_format = ref_cell.number_format
-                                    if ref_cell.alignment:
-                                        cell.alignment = copy(ref_cell.alignment)
-                                    if ref_cell.font:
-                                        cell.font = copy(ref_cell.font)
-                                    if ref_cell.border:
-                                        cell.border = copy(ref_cell.border)
-                                    if ref_cell.fill:
-                                        cell.fill = copy(ref_cell.fill)
-                            except:
-                                pass # Ignora erro de cópia de estilo para não travar
+                        # Aplica o estilo capturado ou o estilo da linha anterior
+                        if target_col_idx in style_template:
+                            tmpl = style_template[target_col_idx]
+                            cell.font = copy(tmpl['font'])
+                            cell.fill = copy(tmpl['fill'])
+                            cell.border = copy(tmpl['border'])
+                            cell.alignment = copy(tmpl['alignment'])
+                            cell.number_format = tmpl['number_format']
+
+            print(f"[SEMANAL OFICIAL] ✅ Tabela reescrita: {total_rows} linhas a partir da linha 2")
             
-            print(f"[SEMANAL OFICIAL] ✅ {total_added} linhas inseridas após a linha {last_row}")
+            # Limpa linhas remanescentes (se a tabela nova for menor que a antiga/sujeira)
+            # Verifica até onde ia o arquivo original
+            max_row_original = ws.max_row
+            rows_to_clear_start = 2 + total_rows
+            
+            if max_row_original >= rows_to_clear_start:
+                print(f"[SEMANAL OFICIAL] 🧹 Limpando linhas excedentes da {rows_to_clear_start} até {max_row_original}")
+                ws.delete_rows(rows_to_clear_start, amount=(max_row_original - rows_to_clear_start + 1))
             
             # Salva o workbook atualizado
             wb_original.save(output)
