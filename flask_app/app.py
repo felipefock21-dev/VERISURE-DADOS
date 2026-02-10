@@ -2142,13 +2142,16 @@ def atualizar_semanal_oficial(df_semanal_novo):
             wb_original = load_workbook(fh_original)
             ws = wb_original.active
             
-            # Encontra a última linha com dados
-            last_row = ws.max_row
-            print(f"[SEMANAL OFICIAL] 📋 Arquivo original tem {last_row} linhas (incluindo cabeçalho)")
+            # Encontra a última linha com dados (ignora linhas formatadas mas vazias)
+            last_row = 1
+            for row in range(ws.max_row, 1, -1):
+                # Verifica se a linha tem algum valor
+                has_value = any(ws.cell(row=row, column=c).value is not None for c in range(1, ws.max_column + 1))
+                if has_value:
+                    last_row = row
+                    break
             
-            # Encontra a última linha com dados
-            last_row = ws.max_row
-            print(f"[SEMANAL OFICIAL] 📋 Arquivo original tem {last_row} linhas (incluindo cabeçalho)")
+            print(f"[SEMANAL OFICIAL] 📋 Última linha com DADOS: {last_row} (max_row era {ws.max_row})")
             
             # Mapeamento de colunas: Nome -> Índice (1-based)
             # Lê o cabeçalho da planilha (linha 1)
@@ -2160,6 +2163,10 @@ def atualizar_semanal_oficial(df_semanal_novo):
             
             print(f"[SEMANAL OFICIAL] 🗺️ Mapeamento de colunas (Excel): {header_map}")
             
+            # Prepara estilos para nova linha baseado na última linha de dados
+            source_row_idx = last_row
+            if source_row_idx < 2: source_row_idx = 2 # Evita pegar header se só tiver header
+            
             # Adiciona as novas linhas mantendo formatação
             total_added = 0
             for idx, row in linhas_novas_df.iterrows():
@@ -2169,7 +2176,6 @@ def atualizar_semanal_oficial(df_semanal_novo):
                 # Para cada coluna no DataFrame NOVO
                 for col_name in linhas_novas_df.columns:
                     # Verifica onde essa coluna deve ir no Excel
-                    # Tenta match direto ou strip
                     target_col_idx = header_map.get(str(col_name).strip())
                     
                     if target_col_idx:
@@ -2177,9 +2183,9 @@ def atualizar_semanal_oficial(df_semanal_novo):
                         cell.value = row[col_name]
                         
                         # Copia formatação da linha anterior (se existir e for seguro)
-                        if new_row > 2:
+                        if source_row_idx >= 2:
                             try:
-                                ref_cell = ws.cell(row=new_row-1, column=target_col_idx)
+                                ref_cell = ws.cell(row=source_row_idx, column=target_col_idx)
                                 if ref_cell.has_style:
                                     # Copiar estilo básico para evitar erros complexos
                                     cell.number_format = ref_cell.number_format
@@ -2194,7 +2200,7 @@ def atualizar_semanal_oficial(df_semanal_novo):
                             except:
                                 pass # Ignora erro de cópia de estilo para não travar
             
-            print(f"[SEMANAL OFICIAL] ✅ {total_added} linhas preparadas com mapeamento correto de colunas")
+            print(f"[SEMANAL OFICIAL] ✅ {total_added} linhas inseridas após a linha {last_row}")
             
             # Salva o workbook atualizado
             wb_original.save(output)
