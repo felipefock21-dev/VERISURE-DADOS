@@ -1857,8 +1857,12 @@ def passo3_semanal(df_compilado=None):
     print("[PASSO 3] Iniciando geração do relatório semanal (independente)")
     
     try:
+        if df_compilado is not None:
+            print(f"[PASSO 3] ✅ Recebido DataFrame em memória com {len(df_compilado)} linhas")
+        
         # PASSO 3 É INDEPENDENTE - busca o último compilado da pasta saidas
         if df_compilado is None:
+            print(f"[PASSO 3] ⚠️ Nenhum DataFrame recebido, buscando arquivo em disco...")
             compiled_file = get_latest_compiled_file()
             if not compiled_file:
                 return None, "Nenhum arquivo compilado encontrado na pasta saidas/"
@@ -2278,7 +2282,8 @@ def processar_em_background(filepath, timestamp_task):
         # PASSO 3: Relatório Semanal
         print("[BG-TASK] 🔄 Iniciando PASSO 3...")
         atualizar_progresso(3, 75, "Gerando relatório semanal...")
-        df_semanal, erro = passo3_semanal()
+        # FIX: Passar o df_compilado JÁ EM MEMÓRIA para não depender do disco
+        df_semanal, erro = passo3_semanal(df_compilado)
         if erro:
             print(f"[BG-TASK] Aviso Passo 3: {erro}")
             df_semanal = None
