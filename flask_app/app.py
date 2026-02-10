@@ -2146,22 +2146,55 @@ def atualizar_semanal_oficial(df_semanal_novo):
             last_row = ws.max_row
             print(f"[SEMANAL OFICIAL] 📋 Arquivo original tem {last_row} linhas (incluindo cabeçalho)")
             
+            # Encontra a última linha com dados
+            last_row = ws.max_row
+            print(f"[SEMANAL OFICIAL] 📋 Arquivo original tem {last_row} linhas (incluindo cabeçalho)")
+            
+            # Mapeamento de colunas: Nome -> Índice (1-based)
+            # Lê o cabeçalho da planilha (linha 1)
+            header_map = {}
+            for col_idx in range(1, ws.max_column + 1):
+                cell_val = ws.cell(row=1, column=col_idx).value
+                if cell_val:
+                    header_map[str(cell_val).strip()] = col_idx
+            
+            print(f"[SEMANAL OFICIAL] 🗺️ Mapeamento de colunas (Excel): {header_map}")
+            
             # Adiciona as novas linhas mantendo formatação
+            total_added = 0
             for idx, row in linhas_novas_df.iterrows():
                 new_row = last_row + idx + 1
-                for col_idx, col_name in enumerate(linhas_novas_df.columns, 1):
-                    cell = ws.cell(row=new_row, column=col_idx)
-                    cell.value = row[col_name]
+                total_added += 1
+                
+                # Para cada coluna no DataFrame NOVO
+                for col_name in linhas_novas_df.columns:
+                    # Verifica onde essa coluna deve ir no Excel
+                    # Tenta match direto ou strip
+                    target_col_idx = header_map.get(str(col_name).strip())
                     
-                    # Copia formatação da linha anterior (se existir)
-                    if new_row > 2:  # Pula o cabeçalho
-                        ref_cell = ws.cell(row=new_row-1, column=col_idx)
-                        if ref_cell.has_style:
-                            cell.font = copy(ref_cell.font)
-                            cell.fill = copy(ref_cell.fill)
-                            cell.border = copy(ref_cell.border)
-                            cell.number_format = ref_cell.number_format
-                            cell.alignment = copy(ref_cell.alignment)
+                    if target_col_idx:
+                        cell = ws.cell(row=new_row, column=target_col_idx)
+                        cell.value = row[col_name]
+                        
+                        # Copia formatação da linha anterior (se existir e for seguro)
+                        if new_row > 2:
+                            try:
+                                ref_cell = ws.cell(row=new_row-1, column=target_col_idx)
+                                if ref_cell.has_style:
+                                    # Copiar estilo básico para evitar erros complexos
+                                    cell.number_format = ref_cell.number_format
+                                    if ref_cell.alignment:
+                                        cell.alignment = copy(ref_cell.alignment)
+                                    if ref_cell.font:
+                                        cell.font = copy(ref_cell.font)
+                                    if ref_cell.border:
+                                        cell.border = copy(ref_cell.border)
+                                    if ref_cell.fill:
+                                        cell.fill = copy(ref_cell.fill)
+                            except:
+                                pass # Ignora erro de cópia de estilo para não travar
+            
+            print(f"[SEMANAL OFICIAL] ✅ {total_added} linhas preparadas com mapeamento correto de colunas")
             
             # Salva o workbook atualizado
             wb_original.save(output)
