@@ -2011,9 +2011,9 @@ def atualizar_semanal_oficial(df_semanal_novo):
         # Remove colunas Unnamed do novo dataset também
         df_semanal_novo = df_semanal_novo.loc[:, ~df_semanal_novo.columns.str.contains('^Unnamed')]
         
-        # Normaliza a coluna Semana: converte " a " em "-" para compatibilidade
+        # Normaliza a coluna Semana: converte " a " (e variações de espaço) em "-" para compatibilidade
         if 'Semana' in df_semanal_novo.columns:
-            df_semanal_novo['Semana'] = df_semanal_novo['Semana'].str.replace(' a ', '-', regex=False)
+            df_semanal_novo['Semana'] = df_semanal_novo['Semana'].astype(str).str.replace(r'\s+a\s+', '-', regex=True)
         
         # ID do arquivo oficial no Google Drive
         file_id_oficial = "1o5RJnLMpMHMtvyG7FscwFhz37sxcc0_T"
@@ -2045,6 +2045,14 @@ def atualizar_semanal_oficial(df_semanal_novo):
             
             # Remove colunas Unnamed (vazias) imediatamente
             df_oficial = df_oficial.loc[:, ~df_oficial.columns.str.contains('^Unnamed')]
+            
+            # CRÍTICO: Normalizar Semana no oficial no MESMO formato do relatório novo (" a " -> "-").
+            # Sem isso, a mesma semana aparece com duas chaves (ex: "29/12 a 04/01" vs "29/12-04/01"),
+            # a linha do novo é vista como "nova" e é adicionada. Resultado: duas linhas para o mesmo (Rádio, Semana).
+            # Ao somar no Excel: Inserções/Investimento/Impactos/TRP/PMM ficam DOBRADOS; Universo pode ficar
+            # zerado na linha "nova" se naquele processamento o DadosIdentificador não tinha match (Universo=0).
+            if 'Semana' in df_oficial.columns:
+                df_oficial['Semana'] = df_oficial['Semana'].astype(str).str.replace(r'\s+a\s+', '-', regex=True)
             
             print(f"[SEMANAL OFICIAL] ✅ Arquivo oficial baixado: {len(df_oficial)} linhas")
             print(f"[SEMANAL OFICIAL] Colunas do arquivo oficial: {list(df_oficial.columns)}")
@@ -2079,10 +2087,6 @@ def atualizar_semanal_oficial(df_semanal_novo):
             print(f"[SEMANAL OFICIAL] ❌ Nenhuma coluna em comum para fazer comparação!")
             return {'status': 'erro', 'mensagem': 'Nenhuma coluna em comum para fazer comparação'}
         
-        if not colunas_chave:
-            print(f"[SEMANAL OFICIAL] ❌ Nenhuma coluna em comum para fazer comparação!")
-            return {'status': 'erro', 'mensagem': 'Nenhuma coluna em comum para fazer comparação'}
-        
         print(f"[SEMANAL OFICIAL] 🔑 Colunas da chave composta: {colunas_chave}")
         
         # DEBUG: Mostra tipos de dados
@@ -2091,10 +2095,20 @@ def atualizar_semanal_oficial(df_semanal_novo):
         print(f"[SEMANAL OFICIAL] 🔍 Tipos de dados (Oficial):")
         print(df_oficial[colunas_chave].dtypes)
         
-        # Cria identificador único para cada linha usando apenas as colunas disponíveis
-        # Força string e strip para garantir match
-        df_oficial['_chave'] = df_oficial[colunas_chave].astype(str).apply(lambda row: '|'.join(row.str.strip().str.upper()), axis=1)
-        df_semanal_novo['_chave'] = df_semanal_novo[colunas_chave].astype(str).apply(lambda row: '|'.join(row.str.strip().str.upper()), axis=1)
+        # Normaliza valor para chave: NaN, "nan", "none", vazio -> "__" para match consistente
+        def _normalizar_para_chave(val):
+            s = str(val).strip().upper()
+            if s in ('', 'NAN', 'NONE', 'NAT', '<NA>'):
+                return '__'
+            return s
+        
+        # Cria identificador único para cada linha (valores normalizados para evitar falsas diferenças)
+        df_oficial['_chave'] = df_oficial[colunas_chave].apply(
+            lambda row: '|'.join(_normalizar_para_chave(v) for v in row), axis=1
+        )
+        df_semanal_novo['_chave'] = df_semanal_novo[colunas_chave].apply(
+            lambda row: '|'.join(_normalizar_para_chave(v) for v in row), axis=1
+        )
         
         print(f"[SEMANAL OFICIAL] Exemplo de chave oficial: {df_oficial['_chave'].iloc[0] if len(df_oficial) > 0 else 'N/A'}")
         print(f"[SEMANAL OFICIAL] Exemplo de chave novo: {df_semanal_novo['_chave'].iloc[0] if len(df_semanal_novo) > 0 else 'N/A'}")
@@ -2110,7 +2124,10 @@ def atualizar_semanal_oficial(df_semanal_novo):
         chaves_comuns = chaves_oficiais.intersection(chaves_novo)
         print(f"[SEMANAL OFICIAL] 🔄 Chaves em COMUM (já existem): {len(chaves_comuns)}")
         
-        linhas_novas_df = df_semanal_novo[~df_semanal_novo['_chave'].isin(chaves_oficiais)]
+        linhas_novas_df = df_semanal_novo[~df_semanal_novo['_chave'].isin(chaves_oficiais)].copy()
+        
+        # Evita duplicatas: se o relatório novo tiver duas linhas com mesma chave, mantém só uma
+        linhas_novas_df = linhas_novas_df.drop_duplicates(subset=['_chave'], keep='first')
         
         linhas_novas = len(linhas_novas_df)
         print(f"[SEMANAL OFICIAL] 📊 Linhas novas encontradas: {linhas_novas}")
@@ -2130,18 +2147,11 @@ def atualizar_semanal_oficial(df_semanal_novo):
         if 'Rádio' in df_combinado.columns and 'Semana' in df_combinado.columns:
             df_combinado = df_combinado.sort_values(['Rádio', 'Semana']).reset_index(drop=True)
         
-        # Remove colunas Unnamed (vazias) antes de fazer upload
+        # Remove colunas Unnamed e alinha ordem das colunas à do oficial (evita coluna trocada no Excel)
         df_combinado = df_combinado.loc[:, ~df_combinado.columns.str.contains('^Unnamed')]
-        
-        # Verifica se houve mudanças
-        if len(df_combinado) == len(df_oficial):
-            print(f"[SEMANAL OFICIAL] ⚠️ Nenhuma mudança no total de linhas!")
-            return {
-                'status': 'info', 
-                'mensagem': 'Nenhuma mudança no arquivo (0 linhas novas)',
-                'debug_keys_oficial': list(df_oficial['_chave'].head(5).astype(str).values),
-                'debug_keys_novo': list(df_semanal_novo['_chave'].head(5).astype(str).values)
-            }
+        colunas_oficial = [c for c in df_oficial.columns if c in df_combinado.columns]
+        colunas_extra = [c for c in df_combinado.columns if c not in colunas_oficial]
+        df_combinado = df_combinado[colunas_oficial + colunas_extra]
         
         print(f"[SEMANAL OFICIAL] ✅ Preparando upload: {len(df_oficial)} linhas originais + {linhas_novas} novas = {len(df_combinado)} total")
         print(f"[SEMANAL OFICIAL] 📋 Colunas finais para upload: {list(df_combinado.columns)}")
