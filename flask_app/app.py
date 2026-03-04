@@ -126,6 +126,11 @@ def add_cors_headers(response):
 # Placeholders que geram Erro 401 invalid_client no Google
 OAUTH_PLACEHOLDERS = ("COLOQUE_SEU_CLIENT_ID_AQUI", "COLOQUE_SEU_CLIENT_SECRET_AQUI")
 
+def _oauth_redirect_uri():
+    """Redirect URI baseada no host da requisição (funciona em verisure-dados ou verisure-compilador sem mudar DEPLOY_URL)."""
+    base = f"{request.scheme}://{request.host}".rstrip("/")
+    return f"{base}/oauth2callback"
+
 @app.route('/authorize')
 def authorize():
     """Redireciona para a página de login do Google"""
@@ -134,14 +139,15 @@ def authorize():
     # Evita redirecionar ao Google com credenciais placeholder (causa 401 invalid_client)
     if (OAUTH_CLIENT_ID in OAUTH_PLACEHOLDERS or OAUTH_CLIENT_SECRET in OAUTH_PLACEHOLDERS or
         not OAUTH_CLIENT_ID.strip() or not OAUTH_CLIENT_SECRET.strip()):
+        redirect_uri_fallback = f"{DEPLOY_URL}/oauth2callback"
         return render_template(
             "oauth_config_erro.html",
             deploy_url=DEPLOY_URL,
-            redirect_uri=f"{DEPLOY_URL}/oauth2callback"
+            redirect_uri=redirect_uri_fallback
         ), 400
     
-    # Gera o redirect_uri dinâmico baseado na URL de deploy configurada
-    redirect_uri = f"{DEPLOY_URL}/oauth2callback"
+    # Usa o host da requisição para o redirect_uri (assim funciona em qualquer domínio onde o app está rodando)
+    redirect_uri = _oauth_redirect_uri()
     
     print(f"[OAUTH] Gerando URL de autorizacao...")
     print(f"[OAUTH]    Host atual: {request.host}")
@@ -154,11 +160,11 @@ def authorize():
 @app.route('/oauth-setup')
 def oauth_setup():
     """Página com a URI exata e instruções para corrigir redirect_uri_mismatch (Erro 400)."""
-    from oauth_config import DEPLOY_URL, OAUTH_REDIRECT_URI
+    from oauth_config import DEPLOY_URL
     return render_template(
         "oauth_redirect_fix.html",
-        redirect_uri=OAUTH_REDIRECT_URI,
-        deploy_url=DEPLOY_URL,
+        redirect_uri=_oauth_redirect_uri(),
+        deploy_url=f"{request.scheme}://{request.host}".rstrip("/"),
     )
 
 @app.route('/debug-oauth')
@@ -173,12 +179,13 @@ def debug_oauth():
     return jsonify({
         'config_deploy_url': DEPLOY_URL,
         'config_redirect_uri': OAUTH_REDIRECT_URI,
+        'effective_redirect_uri': _oauth_redirect_uri(),
         'url_for_generated_uri': url_for_uri,
         'client_id': OAUTH_CLIENT_ID,
         'host_header': request.host,
         'request_scheme': request.scheme,
         'env_deploy_url': os.getenv("DEPLOY_URL"),
-        'instrucao': 'Garanta que "config_redirect_uri" esteja EXATAMENTE IGUAL no Google Cloud Console.'
+        'instrucao': 'Garanta que "effective_redirect_uri" esteja EXATAMENTE IGUAL no Google Cloud Console.'
     })
 
 @app.route('/oauth2callback')
@@ -191,9 +198,8 @@ def oauth2callback():
         return jsonify({'erro': 'Autorização negada'}), 401
     
     try:
-        # Importante: usar o mesmo redirect_uri dinâmico da autorização (com HTTPS se necessário)
-        from oauth_config import DEPLOY_URL
-        redirect_uri = f"{DEPLOY_URL}/oauth2callback"
+        # Mesmo redirect_uri usado na autorização (baseado no host da requisição)
+        redirect_uri = _oauth_redirect_uri()
         
         print(f"[OAUTH] 🔄 Processando callback...")
         print(f"[OAUTH]    Redirect URI usado para troca de token: {redirect_uri}")
