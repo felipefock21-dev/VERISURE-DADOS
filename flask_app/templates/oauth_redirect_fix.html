@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Corrigir redirect_uri_mismatch – VERISURE</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
+        .box { background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+        h1 { color: #c00; font-size: 1.25rem; margin-top: 0; }
+        p { line-height: 1.6; color: #333; }
+        code { background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+        .uri { display: block; word-break: break-all; font-size: 0.9em; background: #f0f8ff; padding: 12px; border-radius: 6px; margin: 12px 0; border: 1px solid #ccc; }
+        ol { margin: 12px 0; padding-left: 22px; }
+        li { margin: 8px 0; }
+        a { color: #06c; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Erro 400: redirect_uri_mismatch</h1>
+        <p>O Google só aceita login se a URI de redirecionamento estiver <strong>exatamente</strong> cadastrada no seu OAuth Client.</p>
+
+        <p><strong>URI que este app está usando (copie e use no passo 2):</strong></p>
+        <code class="uri">{{ redirect_uri }}</code>
+
+        <p><strong>Passos para corrigir:</strong></p>
+        <ol>
+            <li>Abra <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console → Credentials</a>.</li>
+            <li>Clique no seu <strong>OAuth 2.0 Client ID</strong> (tipo Web application).</li>
+            <li>Em <strong>Authorized redirect URIs</strong>, clique em <strong>+ ADD URI</strong>.</li>
+            <li>Cole <strong>exatamente</strong> a URI que está em destaque acima (sem espaço no início/fim, com <code>https://</code> e caminho <code>/oauth2callback</code>).</li>
+            <li>Clique em <strong>SAVE</strong>.</li>
+            <li>Volte ao app e tente fazer login de novo.</li>
+        </ol>
+
+        <p><strong>No Render (variável de ambiente):</strong></p>
+        <p>Confirme que <code>DEPLOY_URL</code> está igual à URL do seu site, sem barra no final, por exemplo:</p>
+        <code class="uri">{{ deploy_url }}</code>
+
+        <p><a href="/">Voltar ao início</a> · <a href="/authorize">Tentar login de novo</a></p>
+    </div>
+</body>
+</html>

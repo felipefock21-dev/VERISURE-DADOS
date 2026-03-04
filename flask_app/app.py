@@ -151,6 +151,16 @@ def authorize():
     session['oauth_state'] = state
     return redirect(auth_url)
 
+@app.route('/oauth-setup')
+def oauth_setup():
+    """Página com a URI exata e instruções para corrigir redirect_uri_mismatch (Erro 400)."""
+    from oauth_config import DEPLOY_URL, OAUTH_REDIRECT_URI
+    return render_template(
+        "oauth_redirect_fix.html",
+        redirect_uri=OAUTH_REDIRECT_URI,
+        deploy_url=DEPLOY_URL,
+    )
+
 @app.route('/debug-oauth')
 @app.route('/debug_oauth')
 def debug_oauth():
