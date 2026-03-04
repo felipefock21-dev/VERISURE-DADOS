@@ -541,8 +541,11 @@ def upload_to_drive(local_filepath, filename):
             print("[OAUTH] ⚠️ Não autenticado - Acesse /authorize primeiro")
             return None
         
-        # Usa o folder_id da configuração OAuth
-        folder_id = DRIVE_FOLDER_ID
+        # Usa o folder_id da configuração OAuth (nunca vazio: oauth_config usa default)
+        folder_id = (DRIVE_FOLDER_ID or "").strip()
+        if not folder_id:
+            print("[GOOGLE DRIVE] ❌ DRIVE_FOLDER_ID não configurado. Defina no .env ou no Render.")
+            return None
         
         # Verifica se já existe arquivo com mesmo nome e deleta
         query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
@@ -571,7 +574,6 @@ def upload_to_drive(local_filepath, filename):
     
     except Exception as e:
         print(f"[GOOGLE DRIVE] ❌ Erro no upload: {str(e)}")
-        return None
         return None
 
 
