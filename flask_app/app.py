@@ -216,37 +216,48 @@ def oauth2callback():
         return jsonify({'erro': f'Erro na autenticação: {str(e)}'}), 401
 
 # Tempo máximo (segundos) que o SSE /progresso fica aberto (evita worker preso e OOM no Render)
-_PROGRESSO_SSE_MAX_SEC = 600
+_PROGRESSO_SSE_MAX_SEC = 120
+
+def _progresso_payload(etapa=0, percentual=0, mensagem=""):
+    """Payload mínimo e sempre serializável para SSE."""
+    return {"etapa": int(etapa), "percentual": int(percentual), "mensagem": str(mensagem)[:200]}
 
 @app.route('/progresso')
 def progresso_sse():
     """Server-Sent Events para enviar progresso em tempo real (lendo do arquivo)"""
     def gerar_progresso():
+        try:
+            # Primeiro byte imediato: evita 500 por timeout/proxy e confirma que o canal abriu
+            p = ler_progresso()
+            safe = _progresso_payload(p.get("etapa"), p.get("percentual"), p.get("mensagem", ""))
+            yield f"data: {json.dumps(safe)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps(_progresso_payload(0, 0, f'Erro: {str(e)[:80]}'))}\n\n"
+            return
         ultimo_percentual = -1
         heartbeat_counter = 0
         start_time = time.time()
         try:
             while True:
                 if (time.time() - start_time) > _PROGRESSO_SSE_MAX_SEC:
-                    yield f"data: {json.dumps({'etapa': 0, 'percentual': 0, 'mensagem': 'Timeout do canal de progresso.'})}\n\n"
+                    yield f"data: {json.dumps(_progresso_payload(0, 0, 'Timeout do canal de progresso.'))}\n\n"
                     break
                 progress = ler_progresso()
-                # Só envia se houver mudança significativa ou for novo
-                if progress.get('percentual') != ultimo_percentual:
-                    yield f"data: {json.dumps(progress)}\n\n"
-                    ultimo_percentual = progress.get('percentual')
+                safe = _progresso_payload(progress.get("etapa"), progress.get("percentual"), progress.get("mensagem", ""))
+                if progress.get("percentual") != ultimo_percentual:
+                    yield f"data: {json.dumps(safe)}\n\n"
+                    ultimo_percentual = progress.get("percentual")
                     heartbeat_counter = 0
                 else:
                     heartbeat_counter += 1
                     yield f": heartbeat {heartbeat_counter}\n\n"
-                # Se terminou, mantém um pouco mais e para
-                if progress.get('etapa') == 4:
+                if progress.get("etapa") == 4:
                     time.sleep(2)
                     break
                 time.sleep(0.5)
         except Exception as e:
             try:
-                yield f"data: {json.dumps({'etapa': 0, 'percentual': 0, 'mensagem': f'Erro: {str(e)[:80]}'})}\n\n"
+                yield f"data: {json.dumps(_progresso_payload(0, 0, str(e)[:80]))}\n\n"
             except Exception:
                 pass
     response = Response(gerar_progresso(), mimetype='text/event-stream')
