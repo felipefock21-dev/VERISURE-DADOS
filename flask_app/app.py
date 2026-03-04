@@ -92,9 +92,12 @@ def ler_progresso():
     if not os.path.exists(PROGRESS_FILE):
         return {'etapa': 0, 'percentual': 0, 'mensagem': 'Aguardando arquivo...'}
     try:
-        with open(PROGRESS_FILE, 'r') as f:
-            return json.load(f)
-    except:
+        with open(PROGRESS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if not isinstance(data, dict):
+                return {'etapa': 0, 'percentual': 0, 'mensagem': 'Aguardando arquivo...'}
+            return data
+    except Exception:
         return {'etapa': 0, 'percentual': 0, 'mensagem': 'Erro ao ler progresso...'}
 
 # Verificar se OAuth está configurado
@@ -212,33 +215,41 @@ def oauth2callback():
         print(f"[OAUTH] ❌ Erro na autenticação: {str(e)}")
         return jsonify({'erro': f'Erro na autenticação: {str(e)}'}), 401
 
+# Tempo máximo (segundos) que o SSE /progresso fica aberto (evita worker preso e OOM no Render)
+_PROGRESSO_SSE_MAX_SEC = 600
+
 @app.route('/progresso')
 def progresso_sse():
     """Server-Sent Events para enviar progresso em tempo real (lendo do arquivo)"""
     def gerar_progresso():
         ultimo_percentual = -1
         heartbeat_counter = 0
-        while True:
-            progress = ler_progresso()
-            # Só envia se houver mudança significativa ou for novo
-            if progress.get('percentual') != ultimo_percentual:
-                yield f"data: {json.dumps(progress)}\n\n"
-                ultimo_percentual = progress.get('percentual')
-                heartbeat_counter = 0
-            else:
-                # Heartbeat mais frequente para evitar timeout
-                heartbeat_counter += 1
-                yield f": heartbeat {heartbeat_counter}\n\n"
-            
-            # Se terminou, mantém um pouco mais e para
-            if progress.get('etapa') == 4:
-                time.sleep(2)
-                break
-                
-            time.sleep(0.5)  # Heartbeat a cada 500ms (mais frequente)
-    
+        start_time = time.time()
+        try:
+            while True:
+                if (time.time() - start_time) > _PROGRESSO_SSE_MAX_SEC:
+                    yield f"data: {json.dumps({'etapa': 0, 'percentual': 0, 'mensagem': 'Timeout do canal de progresso.'})}\n\n"
+                    break
+                progress = ler_progresso()
+                # Só envia se houver mudança significativa ou for novo
+                if progress.get('percentual') != ultimo_percentual:
+                    yield f"data: {json.dumps(progress)}\n\n"
+                    ultimo_percentual = progress.get('percentual')
+                    heartbeat_counter = 0
+                else:
+                    heartbeat_counter += 1
+                    yield f": heartbeat {heartbeat_counter}\n\n"
+                # Se terminou, mantém um pouco mais e para
+                if progress.get('etapa') == 4:
+                    time.sleep(2)
+                    break
+                time.sleep(0.5)
+        except Exception as e:
+            try:
+                yield f"data: {json.dumps({'etapa': 0, 'percentual': 0, 'mensagem': f'Erro: {str(e)[:80]}'})}\n\n"
+            except Exception:
+                pass
     response = Response(gerar_progresso(), mimetype='text/event-stream')
-    # Headers para evitar buffering em proxies
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'
     response.headers['Connection'] = 'keep-alive'
