@@ -10,7 +10,8 @@ OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "COLOQUE_SEU_CLIENT_ID_AQUI")
 OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET", "COLOQUE_SEU_CLIENT_SECRET_AQUI")
 
 # URL do deploy (garante que nao termina com / para evitar // no callback)
-DEPLOY_URL = os.getenv("DEPLOY_URL", "https://verisure-dados.up.railway.app").rstrip("/")
+# Padrão: localhost. No Render, defina DEPLOY_URL nas variáveis de ambiente (ex: https://seu-app.onrender.com)
+DEPLOY_URL = (os.getenv("DEPLOY_URL") or "http://localhost:5000").strip().rstrip("/")
 OAUTH_REDIRECT_URI = f"{DEPLOY_URL}/oauth2callback"
 
 # Pasta para upload (ID que você já tem)

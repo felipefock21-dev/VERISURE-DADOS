@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OAuth não configurado – VERISURE</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
+        .box { background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+        h1 { color: #c00; font-size: 1.25rem; margin-top: 0; }
+        p { line-height: 1.6; color: #333; }
+        code { background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+        ul { margin: 12px 0; padding-left: 20px; }
+        a { color: #06c; }
+        .uri { word-break: break-all; font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>OAuth não configurado (Erro 401 invalid_client)</h1>
+        <p>O app ainda está usando credenciais de exemplo. O Google rejeita isso e mostra &quot;The OAuth client was not found&quot;.</p>
+        <p><strong>Faça o seguinte:</strong></p>
+        <ul>
+            <li>1. Em <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console → Credentials</a>, crie um <strong>OAuth client ID</strong> do tipo <strong>Web application</strong>.</li>
+            <li>2. Em &quot;Authorized redirect URIs&quot; adicione <strong>exatamente</strong>:
+                <br><code class="uri">{{ redirect_uri }}</code>
+            </li>
+            <li>3. Copie o <strong>Client ID</strong> e o <strong>Client secret</strong>.</li>
+            <li>4. Na pasta do projeto (onde está <code>run_app.py</code>), crie ou edite o arquivo <code>.env</code> com:
+                <br><code>OAUTH_CLIENT_ID=seu_client_id.apps.googleusercontent.com</code>
+                <br><code>OAUTH_CLIENT_SECRET=GOCSPX-xxx</code>
+                <br><code>DEPLOY_URL={{ deploy_url }}</code>
+            </li>
+            <li>5. Reinicie o app e tente &quot;Conectar ao Google Drive&quot; de novo.</li>
+        </ul>
+        <p>Veja também <code>.env.example</code> no projeto.</p>
+        <p><a href="/">Voltar ao início</a></p>
+    </div>
+</body>
+</html>

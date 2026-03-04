@@ -3,6 +3,16 @@
 COMPILADOR DE RELATÓRIOS VERISURE - Versão Web (Flask)
 Reutiliza FIELMENTE a lógica do script Colab em uma aplicação web
 """
+# Carrega .env da raiz do projeto (para OAUTH_CLIENT_ID, DEPLOY_URL, etc.)
+import os as _os
+import sys as _sys
+_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _root)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_os.path.join(_root, ".env"))
+except ImportError:
+    pass
 
 from flask import Flask, render_template, request, jsonify, send_file, redirect, session, url_for, Response
 import pandas as pd
@@ -42,7 +52,13 @@ from oauth_config import DRIVE_FOLDER_ID, TOKEN_FILE
 warnings.filterwarnings('ignore')
 
 # ===== ARMAZENAMENTO DE PROGRESSO (para SSE - Baseado em Arquivo) =====
-PROGRESS_FILE = 'upload_progress.json'
+# Caminho absoluto em temp_uploads para evitar WinError 5 (acesso negado) quando CWD muda
+_PROGRESS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+try:
+    os.makedirs(_PROGRESS_DIR, exist_ok=True)
+except OSError:
+    _PROGRESS_DIR = tempfile.gettempdir()
+PROGRESS_FILE = os.path.join(_PROGRESS_DIR, 'upload_progress.json')
 
 def atualizar_progresso(etapa, percentual, mensagem):
     """Atualiza o progresso em um arquivo compartilhado de forma atômica"""
@@ -53,11 +69,20 @@ def atualizar_progresso(etapa, percentual, mensagem):
         'timestamp': time.time()
     }
     try:
-        # Escrita atômica: escreve em arquivo temporário e renomeia
-        temp_progress = f"{PROGRESS_FILE}.tmp"
-        with open(temp_progress, 'w') as f:
+        temp_progress = PROGRESS_FILE + '.tmp'
+        with open(temp_progress, 'w', encoding='utf-8') as f:
             json.dump(progress, f)
-        os.replace(temp_progress, PROGRESS_FILE)
+        try:
+            os.replace(temp_progress, PROGRESS_FILE)
+        except OSError:
+            # Fallback: grava direto (evita WinError 5 em Windows quando outro processo usa o arquivo)
+            with open(PROGRESS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(progress, f)
+            if os.path.exists(temp_progress):
+                try:
+                    os.remove(temp_progress)
+                except OSError:
+                    pass
     except Exception as e:
         print(f"[PROGRESSO] Erro ao gravar: {e}")
     print(f"[PROGRESSO] {percentual}% - {mensagem}")
@@ -98,14 +123,27 @@ def add_cors_headers(response):
 # ENDPOINTS OAUTH 2.0
 # ==============================================================================
 
+# Placeholders que geram Erro 401 invalid_client no Google
+OAUTH_PLACEHOLDERS = ("COLOQUE_SEU_CLIENT_ID_AQUI", "COLOQUE_SEU_CLIENT_SECRET_AQUI")
+
 @app.route('/authorize')
 def authorize():
     """Redireciona para a página de login do Google"""
+    from oauth_config import DEPLOY_URL, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET
+    
+    # Evita redirecionar ao Google com credenciais placeholder (causa 401 invalid_client)
+    if (OAUTH_CLIENT_ID in OAUTH_PLACEHOLDERS or OAUTH_CLIENT_SECRET in OAUTH_PLACEHOLDERS or
+        not OAUTH_CLIENT_ID.strip() or not OAUTH_CLIENT_SECRET.strip()):
+        return render_template(
+            "oauth_config_erro.html",
+            deploy_url=DEPLOY_URL,
+            redirect_uri=f"{DEPLOY_URL}/oauth2callback"
+        ), 400
+    
     # Gera o redirect_uri dinâmico baseado na URL de deploy configurada
-    from oauth_config import DEPLOY_URL
     redirect_uri = f"{DEPLOY_URL}/oauth2callback"
     
-    print(f"[OAUTH] 🔑 Gerando URL de autorização...")
+    print(f"[OAUTH] Gerando URL de autorizacao...")
     print(f"[OAUTH]    Host atual: {request.host}")
     print(f"[OAUTH]    Redirect URI gerado: {redirect_uri}")
     
@@ -114,6 +152,7 @@ def authorize():
     return redirect(auth_url)
 
 @app.route('/debug-oauth')
+@app.route('/debug_oauth')
 def debug_oauth():
     """Rota de diagnóstico para verificar o Redirect URI gerado"""
     from oauth_config import DEPLOY_URL, OAUTH_REDIRECT_URI, OAUTH_CLIENT_ID
@@ -204,6 +243,57 @@ def oauth_status():
             'mensagem': '⚠️ Não autenticado. Acesse /authorize para fazer login.',
             'link_authorize': '/authorize'
         }), 401
+
+
+@app.route('/debug-dados-id')
+def debug_dados_id():
+    """
+    Debug: mostra exatamente o que o app recebe do Google Sheet DadosIdentificador.
+    Abra no navegador: http://localhost:5000/debug-dados-id
+    """
+    try:
+        sheets_service = get_authenticated_sheets_service()
+        if not sheets_service:
+            return jsonify({
+                'erro': 'Não autenticado',
+                'dica': 'Acesse /authorize primeiro e faça login no Google.'
+            }), 401
+        sheet_id = "1UmWzuIpF1nEh1YUJH4pu9jJL7PJHvlQvHE4Pnrw6xhA"
+        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+        sheets_list = spreadsheet.get('sheets', [])
+        if not sheets_list:
+            return jsonify({'erro': 'Planilha sem abas', 'sheet_id': sheet_id}), 404
+        sheet_title = sheets_list[0].get('properties', {}).get('title')
+        range_name = f"'{sheet_title}'!A:Z"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=sheet_id, range=range_name
+        ).execute()
+        values = result.get('values', [])
+        if not values:
+            return jsonify({
+                'mensagem': 'Planilha vazia',
+                'sheet_id': sheet_id,
+                'aba': sheet_title,
+                'linhas': 0
+            }), 200
+        # Primeiras linhas brutas (o que a API retorna)
+        linha1 = values[0] if len(values) > 0 else []
+        linha2 = values[1] if len(values) > 1 else []
+        linha3 = values[2] if len(values) > 2 else []
+        # Nomes das colunas (linha 1) com índice para referência
+        colunas_com_indice = [{'indice': i, 'nome': str(v)[:50]} for i, v in enumerate(linha1)]
+        return jsonify({
+            'sheet_id': sheet_id,
+            'aba': sheet_title,
+            'total_linhas': len(values),
+            'linha_1_cabecalho': linha1,
+            'linha_2': linha2,
+            'linha_3': linha3,
+            'colunas_com_indice': colunas_com_indice,
+            'dica': 'Identificador costuma ser coluna 0 (A), Universo coluna 11 (L), porc coluna 10 (K). Use essas posições se os nomes não baterem.'
+        }), 200
+    except Exception as e:
+        return jsonify({'erro': str(e)}), 500
 
 
 # Criar pastas
@@ -506,14 +596,13 @@ def upload_all_reports_to_drive(timestamp):
 
 
 def get_latest_compiled_file():
-    """Encontra o arquivo compilado mais recente na pasta saidas"""
+    """Encontra o arquivo compilado mais recente na pasta saidas (.xlsx ou .csv; compilados grandes são salvos como CSV)"""
     saidas_path = app.config['SAIDAS_FOLDER']
-    pattern = os.path.join(saidas_path, 'COMPILADO_*.xlsx')
-    files = glob_module.glob(pattern)
-    
+    files = []
+    for ext in ('*.xlsx', '*.csv'):
+        files.extend(glob_module.glob(os.path.join(saidas_path, 'COMPILADO_' + ext)))
     if not files:
         return None
-    
     files.sort(key=os.path.getmtime, reverse=True)
     return files[0]
 
@@ -791,16 +880,63 @@ def clean_dataframe(df):
     return df
 
 def select_required_columns(df):
-    """Seleciona apenas as colunas necessárias"""
+    """Seleciona apenas as colunas necessárias (modelo veriRelatorioModelo). Aceita 'ID' como 'Identificador'."""
     required_columns = ['Identificador', 'Data', 'Hora', 'Rádio', 'Cidade / UF',
                        'Peça', 'Comercial', 'Status', 'PMM', 'Preço', 'Semana', 'Ano Comercial', 'Mês Comercial']
-
+    if 'Identificador' not in df.columns and 'ID' in df.columns:
+        df = df.copy()
+        df['Identificador'] = df['ID']
     existing_columns = [col for col in required_columns if col in df.columns]
-
     if not existing_columns:
         return pd.DataFrame()
-
     return df[existing_columns].copy()
+
+# Nomes aceitos para a coluna de percentual no DadosIdentificador (planilha pode usar % ou Percentual)
+_PORC_ALIASES = ('porc', 'perc', '%', 'percentual', 'participação', 'participacao')
+
+def _renomear_colunas_dados_id(df):
+    """
+    Alinha ao Colab: só renomeia colunas que batem por nome (strip+lower).
+    Identificador/ID, Universo, porc (ou perc, %, percentual) - primeira ocorrência de cada.
+    """
+    if df is None or df.empty:
+        return df
+    found = {}
+    for c in df.columns:
+        k = str(c).strip().lower()
+        if k in ('identificador', 'id') and 'Identificador' not in found:
+            found['Identificador'] = c
+        elif k == 'universo' and 'Universo' not in found:
+            found['Universo'] = c
+        elif k in _PORC_ALIASES and 'porc' not in found:
+            found['porc'] = c
+    if found:
+        df = df.rename(columns={v: k for k, v in found.items()})
+    return df
+
+def _normalizar_colunas_dados_identificador(df):
+    """
+    Normaliza nomes das colunas do DadosIdentificador (Excel): só por nome (strip+lower).
+    Aceita 'Identificador'/'ID', 'Universo', 'porc' - sem fallback por posição para não pegar coluna errada.
+    """
+    return _renomear_colunas_dados_id(df)
+
+def _normalizar_identificador_para_merge(s):
+    """Unifica formato do Identificador para o merge: strip, upper, 123.0->123, 0123->123."""
+    if pd.isna(s):
+        return ''
+    s = str(s).strip().upper()
+    if not s or s == 'NAN':
+        return ''
+    # Remove .0 final quando o resto é inteiro (Excel grava 123 como 123.0)
+    if s.endswith('.0'):
+        rest = s[:-2]
+        if rest.isdigit() or (rest.startswith('-') and rest[1:].isdigit()):
+            s = rest
+    # Remove zeros à esquerda em strings só numéricas (0123 = 123)
+    if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
+        s = str(int(s)) if s.isdigit() else ('-' + str(int(s[1:])))
+    return s
 
 def extract_dados_identificador_from_google_sheets():
     """Extrai DadosIdentificador do Google Sheets usando OAuth"""
@@ -839,18 +975,20 @@ def extract_dados_identificador_from_google_sheets():
                 print("[PASSO 1] ℹ️ Google Sheets vazio")
                 return None
             
-            # Cria DataFrame
+            # Primeira linha = cabeçalho, resto = dados (igual ao Colab)
             df_dados_id = pd.DataFrame(values[1:], columns=values[0])
-            
-            # Seleciona colunas necessárias
+            df_dados_id = _renomear_colunas_dados_id(df_dados_id)
             merge_columns = ['Identificador', 'Universo', 'porc']
             existing_cols = [col for col in merge_columns if col in df_dados_id.columns]
             
             if 'Identificador' not in existing_cols:
-                print("[PASSO 1] ℹ️ Coluna 'Identificador' não encontrada em Google Sheets")
+                print("[PASSO 1] ℹ️ Coluna 'Identificador' não encontrada em Google Sheets. Colunas lidas:", list(df_dados_id.columns))
                 return None
             
-            print(f"[PASSO 1] ✅ DadosIdentificador carregado: {len(df_dados_id)} registros")
+            print(f"[PASSO 1] ✅ DadosIdentificador carregado: {len(df_dados_id)} registros. Colunas: {existing_cols}")
+            if len(df_dados_id) > 0:
+                ex_id = df_dados_id['Identificador'].iloc[0]
+                print(f"[PASSO 1]    Exemplo Identificador no sheet: {repr(ex_id)}")
             return df_dados_id[existing_cols].copy()
             
         except Exception as e:
@@ -882,19 +1020,26 @@ def extract_dados_identificador(arquivo_path):
         df_dados_id = pd.read_excel(arquivo_path, sheet_name=dados_id_sheet)
         xls.close()
         
-        # Remove segunda linha se necessário
-        if len(df_dados_id) > 1:
-            df_dados_id = df_dados_id.drop(index=0).reset_index(drop=True)
+        df_dados_id = _normalizar_colunas_dados_identificador(df_dados_id)
+        if df_dados_id is None:
+            return None
         
-        # Seleciona colunas necessárias para merge
+        # Remove primeira linha só se for repetição do cabeçalho (ex: "Identificador" ou vazio)
+        if len(df_dados_id) > 1 and 'Identificador' in df_dados_id.columns:
+            first_val = str(df_dados_id['Identificador'].iloc[0]).strip().lower()
+            if first_val in ('', 'nan', 'identificador'):
+                df_dados_id = df_dados_id.drop(index=0).reset_index(drop=True)
+        
         merge_columns = ['Identificador', 'Universo', 'porc']
         existing_cols = [col for col in merge_columns if col in df_dados_id.columns]
         
         if 'Identificador' not in existing_cols:
-            print("[PASSO 1] ⚠️ Coluna 'Identificador' não encontrada em DadosIdentificador")
+            print("[PASSO 1] ⚠️ Coluna 'Identificador' não encontrada. Colunas na aba:", list(df_dados_id.columns))
             return None
         
-        print(f"[PASSO 1] ✅ DadosIdentificador encontrado: {len(df_dados_id)} registros")
+        print(f"[PASSO 1] ✅ DadosIdentificador (Excel) carregado: {len(df_dados_id)} registros. Colunas: {existing_cols}")
+        if len(df_dados_id) > 0:
+            print(f"[PASSO 1]    Exemplo Identificador na aba: {repr(df_dados_id['Identificador'].iloc[0])}")
         return df_dados_id[existing_cols].copy()
     
     except Exception as e:
@@ -1070,35 +1215,45 @@ def passo1_compilar(arquivo_path):
     try:
         all_dataframes = []
         
-        # ========== ETAPA 1: Ler arquivo uploaded ==========
-        print(f"[PASSO 1] 📖 ETAPA 1: Lendo arquivo principal")
-        df_upload = pd.read_excel(arquivo_path, sheet_name=0)
-        print(f"[PASSO 1]    {len(df_upload)} registros lidos do arquivo")
-        
-        # Remove segunda linha se necessário
-        if len(df_upload) > 1:
-            df_upload = df_upload.drop(index=0).reset_index(drop=True)
-        
-        # Limpa e processa
-        df_upload = clean_dataframe(df_upload)
-        df_upload = select_required_columns(df_upload)
-        
-        if not df_upload.empty:
+        # ========== ETAPA 1: Ler TODAS as abas do arquivo uploaded (não só a primeira) ==========
+        print(f"[PASSO 1] 📖 ETAPA 1: Lendo arquivo principal (todas as abas de dados)")
+        xls = pd.ExcelFile(arquivo_path)
+        sheet_names = xls.sheet_names
+        # Pula abas que não são de relatório (DadosIdentificador, modelo, etc.)
+        abas_para_ler = []
+        for name in sheet_names:
+            n_lower = name.lower().replace(' ', '').replace('_', '')
+            if 'dadosidentificador' in n_lower or 'dados identificador' in n_lower:
+                print(f"[PASSO 1]    ⏭️ Pulando aba (DadosIdentificador): {name}")
+                continue
+            if any(t in n_lower for t in ['modelo', 'template', 'verimodelorelatorio']):
+                print(f"[PASSO 1]    ⏭️ Pulando aba (template): {name}")
+                continue
+            abas_para_ler.append(name)
+        if not abas_para_ler:
+            abas_para_ler = [sheet_names[0]]
+            print(f"[PASSO 1]    ℹ️ Usando apenas primeira aba: {abas_para_ler[0]}")
+        for aba_nome in abas_para_ler:
+            df_upload = pd.read_excel(arquivo_path, sheet_name=aba_nome)
+            print(f"[PASSO 1]    Aba '{aba_nome}': {len(df_upload)} registros lidos")
+            if len(df_upload) > 1:
+                df_upload = df_upload.drop(index=0).reset_index(drop=True)
+            df_upload = clean_dataframe(df_upload)
+            df_upload = select_required_columns(df_upload)
+            if df_upload.empty:
+                print(f"[PASSO 1]    ⚠️ Aba '{aba_nome}' sem colunas necessárias ou vazia após limpeza")
+                continue
             df_upload = process_data_types(df_upload)
-            
-            # Recalcula Mês Comercial (2026)
             df_upload = calculate_mes_comercial(df_upload)
-            
-            # Converte Preço
             if 'Preço' in df_upload.columns:
                 df_upload['Preço'] = df_upload['Preço'].apply(clean_price_value)
                 df_upload['Preço'] = pd.to_numeric(df_upload['Preço'], errors='coerce')
                 df_upload['Preço'] = df_upload['Preço'].fillna(0)
-            
-            # Remove duplicatas
             df_upload, dup_removed = remove_duplicates_properly(df_upload)
             all_dataframes.append(df_upload)
-            print(f"[PASSO 1]    ✅ {len(df_upload)} registros válidos adicionados (após limpeza)")
+            n_radios = df_upload['Rádio'].nunique() if 'Rádio' in df_upload.columns else 0
+            print(f"[PASSO 1]    ✅ Aba '{aba_nome}': {len(df_upload)} registros, {n_radios} Rádio(s)")
+        xls.close()
         
         # ========== ETAPA 2: Ler OUTRAS PLANILHAS do Google Drive ==========
         print(f"\n[PASSO 1] 📖 ETAPA 2: Buscando outras planilhas no Google Drive...")
@@ -1153,6 +1308,9 @@ def passo1_compilar(arquivo_path):
                     perc = 20 + int((i / len(report_sheets)) * 15)
                     atualizar_progresso(1, perc, f"Lendo do Drive: {sheet_name}")
 
+                    # Limite do Google: 60 leituras/minuto por usuário; pequena pausa evita HttpError 429
+                    if i > 1:
+                        time.sleep(1.2)
                     # Lê o arquivo
                     df = read_google_sheet(sheets_service, sheet_id, sheet_name)
                     
@@ -1221,43 +1379,34 @@ def passo1_compilar(arquivo_path):
         # ========== ETAPA 4: Fazer MERGE com DadosIdentificador ==========
         print(f"\n[PASSO 1] 🔗 ETAPA 4: Fazendo merge com DadosIdentificador...")
         
+        # Garante coluna Identificador no compilado (alguns Excel usam "ID")
+        if 'Identificador' not in unified_df.columns and 'ID' in unified_df.columns:
+            unified_df['Identificador'] = unified_df['ID']
+        
         # Tenta Google Sheets primeiro, depois Excel
         df_dados_id = extract_dados_identificador_from_google_sheets()
         if df_dados_id is None:
             df_dados_id = extract_dados_identificador(arquivo_path)
         
-        if df_dados_id is not None:
+        if df_dados_id is not None and 'Identificador' in unified_df.columns:
             print(f"[PASSO 1]    ✅ DadosIdentificador carregado: {len(df_dados_id)} registros")
             
-            # Converter ambos para string E NORMALIZAR (strip/upper) para garantir match
-            unified_df['Identificador'] = unified_df['Identificador'].astype(str).str.strip().str.upper()
-            df_dados_id['Identificador'] = df_dados_id['Identificador'].astype(str).str.strip().str.upper()
+            unified_df['Identificador'] = unified_df['Identificador'].apply(_normalizar_identificador_para_merge)
+            df_dados_id['Identificador'] = df_dados_id['Identificador'].apply(_normalizar_identificador_para_merge)
+            df_dados_id = df_dados_id.drop_duplicates(subset=['Identificador'], keep='first').copy()
             
-            # Realiza o merge
             unified_df = unified_df.merge(df_dados_id, on='Identificador', how='left')
             print(f"[PASSO 1]    ✅ Merge realizado: {len(unified_df)} registros")
-            
-            # Verifica quantos não tiveram match (Identificador não encontrado)
-            # Se 'Universo' veio do merge, será NaN onde não houve match
-            if 'Universo' in unified_df.columns:
-                missing_match = unified_df['Universo'].isna().sum()
-                if missing_match > 0:
-                    print(f"[PASSO 1] ⚠️ AVISO: {missing_match} registros não encontraram correspondência em DadosIdentificador (Universo será 0)")
-                    # DEBUG: Mostra alguns identificadores sem match
-                    missing_ids = unified_df[unified_df['Universo'].isna()]['Identificador'].unique()[:5]
-                    print(f"[PASSO 1]    Exemplos de IDs sem match: {missing_ids}")
             
             # Libera DadosIdentificador após merge
             del df_dados_id
             gc.collect()
             
-            # Helper para limpar strings numéricas PT-BR (1.000,00 -> 1000.00)
             def clean_number_str(val):
                 if pd.isna(val): return val
                 if isinstance(val, (int, float)): return val
                 val = str(val).strip()
                 if val == '': return 0
-                # Remove separador de milhar (.) e troca virgula decimal por ponto
                 val = val.replace('.', '').replace(',', '.')
                 return val
 
@@ -1692,7 +1841,10 @@ def passo2_mensal(df_compilado=None):
                 return None, "Nenhum arquivo compilado encontrado na pasta saidas/"
             
             print(f"[PASSO 2] 📖 Carregando: {os.path.basename(compiled_file)}")
-            df_compilado = pd.read_excel(compiled_file)
+            if str(compiled_file).lower().endswith('.csv'):
+                df_compilado = pd.read_csv(compiled_file, encoding='utf-8-sig')
+            else:
+                df_compilado = pd.read_excel(compiled_file)
         
         if df_compilado.empty:
             return None, "Dados compilados vazios"
@@ -1894,7 +2046,10 @@ def passo3_semanal(df_compilado=None):
                 return None, "Nenhum arquivo compilado encontrado na pasta saidas/"
             
             print(f"[PASSO 3] 📖 Carregando: {os.path.basename(compiled_file)}")
-            df_compilado = pd.read_excel(compiled_file)
+            if str(compiled_file).lower().endswith('.csv'):
+                df_compilado = pd.read_csv(compiled_file, encoding='utf-8-sig')
+            else:
+                df_compilado = pd.read_excel(compiled_file)
         
         if df_compilado.empty:
             return None, "Dados compilados vazios"
@@ -2131,6 +2286,16 @@ def atualizar_semanal_oficial(df_semanal_novo):
         
         linhas_novas = len(linhas_novas_df)
         print(f"[SEMANAL OFICIAL] 📊 Linhas novas encontradas: {linhas_novas}")
+        
+        # Aviso: linhas novas com Universo zerado (geralmente = Identificador ausente no DadosIdentificador)
+        if 'Universo' in linhas_novas_df.columns:
+            com_zero = linhas_novas_df[linhas_novas_df['Universo'].fillna(0) == 0]
+            if len(com_zero) > 0:
+                print(f"[SEMANAL OFICIAL] ⚠️ {len(com_zero)} linha(s) nova(s) com Universo = 0 (verifique DadosIdentificador/Google Sheets)")
+                for _, r in com_zero.iterrows():
+                    rad = r.get('Rádio', '')
+                    sem = r.get('Semana', '')[:50] if pd.notna(r.get('Semana')) else ''
+                    print(f"[SEMANAL OFICIAL]    → Rádio: {rad} | Semana: {sem}...")
         
         if linhas_novas_df.empty:
             print(f"[SEMANAL OFICIAL] ℹ️ Nenhuma linha nova para adicionar")
