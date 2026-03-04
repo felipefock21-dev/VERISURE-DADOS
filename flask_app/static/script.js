@@ -263,8 +263,8 @@ async function processarArquivo() {
     // Mostrar barra de carregamento
     mostrarProgressBar();
 
-    // Conectar ao SSE para receber progresso em tempo real
-    conectarSSE();
+    // Polling de progresso (evita SSE que derruba worker por OOM no Render)
+    iniciarPollingProgresso();
 
     // Simular progresso dos passos
     ativarPasso(1);
@@ -290,82 +290,57 @@ async function processarArquivo() {
             // Inicia o polling do resultado como fallback ao SSE
             setTimeout(() => buscarResultadoFinal(data.timestamp), 10000);
         } else {
-            desconectarSSE();
+            pararPollingProgresso();
             esconderProgressBar();
             mostrarErro(data.erro || 'Erro desconhecido no servidor');
         }
     } catch (error) {
-        desconectarSSE();
+        pararPollingProgresso();
         esconderProgressBar();
         mostrarErro(`Erro ao enviar arquivo: ${error.message}`);
     }
 }
 
 // =============================================================================
-// SERVER-SENT EVENTS (SSE) - RECEBER PROGRESSO REAL
+// POLLING DE PROGRESSO (evita SSE / long-lived connection → OOM no Render)
 // =============================================================================
 
-let sseRetryCount = 0;
-const MAX_SSE_RETRIES = 5;
+let progressPollInterval = null;
+const PROGRESSO_POLL_MS = 800;
+const PROGRESSO_POLL_MAX_MS = 15 * 60 * 1000; // 15 min
 
-function conectarSSE() {
-    if (eventSource) {
-        eventSource.close();
+function iniciarPollingProgresso() {
+    if (progressPollInterval) clearInterval(progressPollInterval);
+    const startTime = Date.now();
+
+    function poll() {
+        if (Date.now() - startTime > PROGRESSO_POLL_MAX_MS) {
+            pararPollingProgresso();
+            if (window.currentTaskTimestamp) buscarResultadoFinal(window.currentTaskTimestamp);
+            return;
+        }
+        fetch('/progresso/json')
+            .then(r => r.json())
+            .then(data => {
+                atualizarProgressBar(data.percentual);
+                if (data.etapa > 0 && data.etapa <= 3) ativarPasso(data.etapa);
+                if (data.etapa === 4 || data.percentual >= 100) {
+                    pararPollingProgresso();
+                    if (window.currentTaskTimestamp) buscarResultadoFinal(window.currentTaskTimestamp);
+                }
+            })
+            .catch(() => {});
     }
 
-    console.log('[SSE] Iniciando conexão...');
-    eventSource = new EventSource('/progresso');
+    poll();
+    progressPollInterval = setInterval(poll, PROGRESSO_POLL_MS);
+}
 
-    eventSource.onmessage = function (event) {
-        try {
-            const data = JSON.parse(event.data);
-            console.log('[SSE] Progresso:', data);
-
-            // Resetar retry count ao receber mensagem válida
-            sseRetryCount = 0;
-
-            atualizarProgressBar(data.percentual);
-
-            // Atualizar etapa visual
-            if (data.etapa > 0 && data.etapa <= 3) {
-                ativarPasso(data.etapa);
-            }
-
-            // SE CHEGOU NO 100% (ETAPA 4), busca o resultado final
-            if (data.etapa === 4 || data.percentual >= 100) {
-                console.log('[SSE] Processamento concluído via SSE! Buscando resultado...');
-                desconectarSSE();
-                if (window.currentTaskTimestamp) {
-                    buscarResultadoFinal(window.currentTaskTimestamp);
-                }
-            }
-        } catch (error) {
-            console.error('[SSE] Erro ao processar:', error);
-        }
-    };
-
-    eventSource.onerror = function (error) {
-        // EventSource tenta reconectar automaticamente, então só logamos se for crítico
-        if (eventSource.readyState === EventSource.CLOSED) {
-            console.warn('[SSE] Conexão fechada permanentemente.');
-
-            if (sseRetryCount < MAX_SSE_RETRIES) {
-                sseRetryCount++;
-                console.log(`[SSE] Tentativa de reconexão ${sseRetryCount}/${MAX_SSE_RETRIES}...`);
-                // EventSource reconecta automaticamente, não precisamos fazer nada
-            } else {
-                console.error('[SSE] Máximo de tentativas de reconexão atingido.');
-                desconectarSSE();
-                if (window.currentTaskTimestamp) {
-                    console.log('[SSE] Fallback: Iniciando busca de resultado final por polling...');
-                    buscarResultadoFinal(window.currentTaskTimestamp);
-                }
-            }
-        } else {
-            // Conexão temporariamente interrompida, EventSource reconectará automaticamente
-            console.log('[SSE] Reconectando automaticamente...');
-        }
-    };
+function pararPollingProgresso() {
+    if (progressPollInterval) {
+        clearInterval(progressPollInterval);
+        progressPollInterval = null;
+    }
 }
 
 async function buscarResultadoFinal(timestamp) {
@@ -387,12 +362,13 @@ async function buscarResultadoFinal(timestamp) {
             } else if (data.sucesso === false) {
                 // Ocorreu um erro no processamento em background
                 console.error('[RESULTADO] Erro no processamento:', data.erro);
-                desconectarSSE();
+                pararPollingProgresso();
                 esconderProgressBar();
                 mostrarErro(data.erro || 'Erro no processamento em segundo plano');
             } else {
                 console.log('[RESULTADO] Resultado obtido!', data);
                 resultado = data;
+                pararPollingProgresso();
                 atualizarProgressBar(100);
                 setTimeout(() => mostrarResultado(data), 500);
             }
@@ -408,11 +384,7 @@ async function buscarResultadoFinal(timestamp) {
 }
 
 function desconectarSSE() {
-    if (eventSource) {
-        console.log('[SSE] Fechando conexão.');
-        eventSource.close();
-        eventSource = null;
-    }
+    pararPollingProgresso();
 }
 
 // =============================================================================

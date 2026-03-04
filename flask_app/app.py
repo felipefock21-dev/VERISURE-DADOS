@@ -266,6 +266,15 @@ def progresso_sse():
     response.headers['Connection'] = 'keep-alive'
     return response
 
+@app.route('/progresso/json')
+def progresso_json():
+    """Retorna o progresso atual em JSON (uma resposta, sem stream). Uso: polling no frontend para evitar OOM no Render."""
+    try:
+        p = ler_progresso()
+        return jsonify(_progresso_payload(p.get("etapa"), p.get("percentual"), p.get("mensagem", "")))
+    except Exception:
+        return jsonify(_progresso_payload(0, 0, "Erro ao ler progresso")), 200
+
 @app.route('/oauth-status')
 def oauth_status():
     """Retorna o status da autenticação OAuth"""
