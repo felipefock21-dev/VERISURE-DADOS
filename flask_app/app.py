@@ -108,10 +108,22 @@ app = Flask(__name__)
 # Configurar ProxyFix para Railway (essencial para url_for usar HTTPS)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+_is_railway = bool(os.getenv("RAILWAY_PROJECT_ID") or os.getenv("RAILWAY_ENVIRONMENT"))
+_is_production = _is_railway or os.getenv("FLASK_ENV", "").lower() == "production"
+_secret_key = (os.getenv("SECRET_KEY") or "").strip()
+if not _secret_key:
+    if _is_production:
+        raise RuntimeError("SECRET_KEY ausente. Defina essa variavel no ambiente de producao.")
+    _secret_key = "dev-only-secret-key"
+    print("[SECURITY] SECRET_KEY nao definida; usando chave de desenvolvimento.")
+
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max
 app.config['UPLOAD_FOLDER'] = 'temp_uploads'
 app.config['SAIDAS_FOLDER'] = 'saidas'
-app.secret_key = 'sua_chave_secreta_aqui_mude_em_producao'  # Para sessions
+app.secret_key = _secret_key
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = _is_production
 
 # Adicionar headers CORS para permitir requisições de qualquer origem
 @app.after_request
@@ -196,9 +208,13 @@ def oauth2callback():
     """Callback após autorização do Google"""
     code = request.args.get('code')
     state = request.args.get('state')
+    expected_state = session.pop('oauth_state', None)
     
     if not code:
         return jsonify({'erro': 'Autorização negada'}), 401
+
+    if not expected_state or not state or state != expected_state:
+        return jsonify({'erro': 'Estado OAuth inválido. Refaça o login em /authorize.'}), 401
     
     try:
         # Mesmo redirect_uri usado na autorização (baseado no host da requisição)
@@ -2503,6 +2519,11 @@ def atualizar_semanal_oficial(df_semanal_novo):
 def index():
     """Página inicial"""
     return render_template('index.html')
+
+@app.route('/health')
+def health():
+    """Healthcheck simples para plataforma de deploy."""
+    return jsonify({'status': 'ok'}), 200
 
 @app.route('/upload', methods=['POST'])
 def upload_file():

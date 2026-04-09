@@ -6,13 +6,18 @@ Obtenha o Client ID e Client Secret em: https://console.cloud.google.com/
 import os
 import re
 
+_IS_RAILWAY = bool(os.getenv("RAILWAY_PROJECT_ID") or os.getenv("RAILWAY_ENVIRONMENT"))
+
 # Lê de variáveis de ambiente (para deploy) ou usa valores locais
 OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "COLOQUE_SEU_CLIENT_ID_AQUI")
 OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET", "COLOQUE_SEU_CLIENT_SECRET_AQUI")
 
 # URL do deploy (garante que nao termina com / para evitar // no callback)
-# Padrão: localhost. No Render, defina DEPLOY_URL nas variáveis de ambiente (ex: https://seu-app.onrender.com)
-DEPLOY_URL = (os.getenv("DEPLOY_URL") or "http://localhost:5000").strip().rstrip("/")
+# No Railway, DEPLOY_URL deve estar sempre definido para evitar callback incorreto.
+_deploy_url_raw = (os.getenv("DEPLOY_URL") or "").strip().rstrip("/")
+if _IS_RAILWAY and not _deploy_url_raw:
+    raise RuntimeError("DEPLOY_URL ausente no Railway. Defina a URL publica do servico.")
+DEPLOY_URL = _deploy_url_raw or "http://localhost:5000"
 OAUTH_REDIRECT_URI = f"{DEPLOY_URL}/oauth2callback"
 
 def _normalize_drive_folder_id(value):
@@ -29,9 +34,11 @@ def _normalize_drive_folder_id(value):
         return s
     return s
 
-# Pasta para upload: aceita ID ou URL. Se env vazio, usa o default.
+# Pasta para upload: aceita ID ou URL.
 _drive_folder_raw = (os.getenv("DRIVE_FOLDER_ID") or "").strip()
 _drive_folder = _normalize_drive_folder_id(_drive_folder_raw) if _drive_folder_raw else None
+if _IS_RAILWAY and not _drive_folder:
+    raise RuntimeError("DRIVE_FOLDER_ID ausente no Railway. Defina a pasta de destino do upload.")
 DRIVE_FOLDER_ID = _drive_folder if _drive_folder else "1fSLimz_7vqF4T-gotvZaux0W7QLcqpRa"
 
 # Scopes necessários para OAuth
