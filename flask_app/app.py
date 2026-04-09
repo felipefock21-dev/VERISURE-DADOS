@@ -2034,62 +2034,70 @@ def passo2_mensal(df_compilado=None):
 # FUNÇÕES AUXILIARES: Extração de Ano e Mês Comercial
 # ==============================================================================
 
-def extrair_ano_comercial(periodo_semana_str):
-    """
-    Extrai o ano comercial da string da semana
-    Formato: "Semana 01: 29/12/2025 a 04/01/2026"
-    Retorna o ano da segunda data (fim do período) como número inteiro
-    """
-    try:
-        # Tenta encontrar a segunda data (após " a " ou após "-")
-        if ' a ' in periodo_semana_str:
-            data_fim_str = periodo_semana_str.split(' a ')[1].strip()
-        elif '-' in periodo_semana_str:
-            data_fim_str = periodo_semana_str.split('-')[1].strip()
-        else:
-            return ''
-        
-        # Extrai o ano (últimos 4 caracteres) como número inteiro
-        ano = data_fim_str.split('/')[-1]
-        return ano  # Ex: 2026 (sem apóstrofo)
-    except:
-        return ''
-
-def extrair_mes_comercial(periodo_semana_str):
-    """
-    Extrai o mês comercial da string da semana
-    Formato: "Semana 01: 29/12/2025 a 04/01/2026"
-    Determina o mês comercial baseado no período
-    Retorna formato: "Jan'26", "Fev'26", etc
+def _parse_data_fim_semana(periodo_semana_str):
+    """Extrai a data final (DD/MM/YYYY) da string de semana.
+    Aceita separadores ' a ' e '-'.
+    Retorna tupla (dia, mes, ano_str) ou None se parsing falhar.
     """
     try:
-        # Encontra a segunda data (período final)
-        if ' a ' in periodo_semana_str:
-            data_fim_str = periodo_semana_str.split(' a ')[1].strip()
-        elif '-' in periodo_semana_str:
-            data_fim_str = periodo_semana_str.split('-')[1].strip()
+        s = str(periodo_semana_str)
+        if ' a ' in s:
+            data_fim_str = s.split(' a ')[1].strip()
+        elif '-' in s:
+            data_fim_str = s.split('-')[1].strip()
         else:
-            return ''
-        
-        # Parse da data final (DD/MM/YYYY)
+            return None
         partes = data_fim_str.split('/')
         if len(partes) == 3:
-            dia = int(partes[0])
-            mes = int(partes[1])
-            ano = partes[2]
-            
-            # Nomes dos meses abreviados em português
-            meses = {
-                1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr',
-                5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago',
-                9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
-            }
-            
-            mes_nome = meses.get(mes, '')
-            return f"{mes_nome}'{ano[-2:]}"  # Ex: "Jan'26"
-        return ''
-    except:
-        return ''
+            return int(partes[0]), int(partes[1]), partes[2].strip()
+    except Exception:
+        pass
+    return None
+
+_MESES_ABREV = {
+    1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr',
+    5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago',
+    9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
+}
+
+def extrair_ano_comercial(periodo_semana_str):
+    """Retorna o ano da data final da semana (ex: '2026')."""
+    parsed = _parse_data_fim_semana(periodo_semana_str)
+    if parsed:
+        return parsed[2]
+    return ''
+
+def extrair_mes_comercial(periodo_semana_str):
+    """Retorna o mes comercial no formato 'Jan'26' baseado na data final da semana."""
+    parsed = _parse_data_fim_semana(periodo_semana_str)
+    if parsed:
+        _, mes, ano = parsed
+        nome = _MESES_ABREV.get(mes, '')
+        if nome:
+            return f"{nome}'{ano[-2:]}"
+    return ''
+
+def sanear_mes_ano_comercial(df):
+    """Recalcula 'Ano Comercial' e 'Mes Comercial' de TODAS as linhas
+    usando a coluna 'Semana' como fonte unica de verdade.
+    Garante consistencia independente do que veio antes.
+    """
+    if df is None or df.empty or 'Semana' not in df.columns:
+        return df
+
+    antes_erros = 0
+    total = len(df)
+
+    df['Ano Comercial'] = df['Semana'].apply(extrair_ano_comercial)
+    df['Mês Comercial'] = df['Semana'].apply(extrair_mes_comercial)
+
+    vazios = df['Mês Comercial'].isin(['', None]).sum()
+    if vazios > 0:
+        print(f"[SANEAMENTO] {vazios}/{total} linha(s) sem Mes Comercial (Semana nao parseavel)")
+    else:
+        print(f"[SANEAMENTO] {total} linha(s) com Ano/Mes Comercial recalculados com sucesso")
+
+    return df
 
 # ==============================================================================
 # PASSO 3: RELATÓRIO SEMANAL
@@ -2177,12 +2185,12 @@ def passo3_semanal(df_compilado=None):
             'PMM_Unico': 'PMM'
         })
         
-        # Extrai Ano Comercial e Mês Comercial da coluna Semana
-        result_df['Ano Comercial'] = result_df['Semana'].apply(extrair_ano_comercial)
-        result_df['Mês Comercial'] = result_df['Semana'].apply(extrair_mes_comercial)
-        
         # Adiciona coluna Programado (vazia)
         result_df['Programado'] = ''
+        
+        # Saneamento final: recalcula Ano/Mes Comercial a partir de Semana
+        print("[PASSO 3] Executando saneamento de Ano/Mes Comercial...")
+        result_df = sanear_mes_ano_comercial(result_df)
         
         # Reorganiza colunas (incluindo as novas)
         final_columns = ['Rádio', 'Semana', 'Ano Comercial', 'Mês Comercial', 'Inserções', 'Investimento', 'Impactos', 'TRP', 'PMM', 'Universo', 'Programado']
@@ -2288,10 +2296,15 @@ def atualizar_semanal_oficial(df_semanal_novo):
         
         print(f"[SEMANAL OFICIAL] ✓ Arquivo oficial tem {len(df_oficial)} linhas")
         
-        # Define as colunas que serão usadas para a chave composta
-        # Usa apenas as colunas que EXISTEM em ambos os DataFrames
+        # Saneamento: recalcula Ano/Mes Comercial de AMBOS os datasets
+        print("[SEMANAL OFICIAL] Saneando Ano/Mes Comercial do arquivo oficial...")
+        df_oficial = sanear_mes_ano_comercial(df_oficial)
+        print("[SEMANAL OFICIAL] Saneando Ano/Mes Comercial do novo relatorio...")
+        df_semanal_novo = sanear_mes_ano_comercial(df_semanal_novo)
+        
+        # Chave de merge: apenas Radio + Semana (campos derivados nao devem definir identidade)
         colunas_chave = []
-        colunas_possiveis = ['Rádio', 'Semana', 'Ano Comercial', 'Mês Comercial']
+        colunas_possiveis = ['Rádio', 'Semana']
         
         for col in colunas_possiveis:
             if col in df_oficial.columns and col in df_semanal_novo.columns:
@@ -2376,6 +2389,10 @@ def atualizar_semanal_oficial(df_semanal_novo):
         # Ordena por Rádio e Semana (mantém ordem lógica)
         if 'Rádio' in df_combinado.columns and 'Semana' in df_combinado.columns:
             df_combinado = df_combinado.sort_values(['Rádio', 'Semana']).reset_index(drop=True)
+        
+        # Saneamento final do dataset combinado antes do upload
+        print("[SEMANAL OFICIAL] Saneamento final do dataset combinado...")
+        df_combinado = sanear_mes_ano_comercial(df_combinado)
         
         # Remove colunas Unnamed e alinha ordem das colunas à do oficial (evita coluna trocada no Excel)
         df_combinado = df_combinado.loc[:, ~df_combinado.columns.str.contains('^Unnamed')]
